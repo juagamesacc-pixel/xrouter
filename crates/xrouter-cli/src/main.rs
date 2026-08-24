@@ -7,8 +7,28 @@ use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// xrouter — a blazing-fast LLM router that load-balances chat/model requests
+/// across multiple providers with quota-aware banning, tiers, and device login.
+///
+/// Typical flow:
+///   1. xrouter wizard --web     # open the web UI at http://127.0.0.1:3001
+///   2. xrouter serve            # start the router at http://127.0.0.1:3000
+const AFTER_HELP: &str = "Storage paths:
+  Config:        ~/.config/xrouter/config.toml (0600)
+  Device tokens: ~/.config/xrouter/device_accounts.json (0600)
+  Model cache:   ~/.cache/xrouter/models.json
+  Tracker:       ~/.local/share/xrouter/track.bin (--track)
+  Wizard UI:     http://127.0.0.1:3001 (xrouter wizard --web)
+  Router:        http://127.0.0.1:3000 (xrouter serve)";
+
 #[derive(Parser)]
-#[command(name="xrouter", version, about="blazing-fast LLM router")]
+#[command(
+    name = "xrouter",
+    version,
+    about = "blazing-fast LLM router (load-balances providers with tiers + device login)",
+    after_help = AFTER_HELP,
+    after_long_help = AFTER_HELP
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -16,6 +36,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Launch the interactive setup wizard, or the web wizard UI on :3001.
     Wizard {
         /// Run the wizard as a separate web server on :3001 (not embedded in
         /// the main server hot path). Requires the separate xrouter-wizard
@@ -23,11 +44,15 @@ enum Commands {
         #[arg(long, default_value="false")]
         web: bool,
     },
+    /// Start the LLM router (default port 3000).
     Serve {
+        /// TCP port to bind (default 3000).
         #[arg(long, default_value="3000")]
         port: u16,
+        /// Host / interface to bind (default 127.0.0.1).
         #[arg(long)]
         host: Option<String>,
+        /// Enable the /admin/bench benchmark endpoint (requires 'bench' feature).
         #[arg(long, default_value="false")]
         bench: bool,
         /// Enable per-request tracking (off-RAM unless set). Writes extremely
@@ -35,32 +60,43 @@ enum Commands {
         #[arg(long, default_value="false")]
         track: bool,
     },
+    /// Manage API keys for a provider.
     #[command(name="keys")]
     Keys {
         #[command(subcommand)]
         sub: KeysCmd,
     },
+    /// List available models for a provider (optionally free-only).
     #[command(name="models")]
     Models {
+        /// Only list models for this provider (default: all configured providers).
         #[arg(long)]
         provider: Option<String>,
+        /// Only show free models.
         #[arg(long, default_value="false")]
         free: bool,
     },
+    /// Create or list tiers (ordered model groups used for failover/balancing).
     #[command(name="tier")]
     Tier {
         #[command(subcommand)]
         sub: TierCmd,
     },
+    /// Send a test request through a tier to verify it works end-to-end.
     Test {
+        /// Tier name to test.
         tier: String,
+        /// Allow hitting live providers (required; refuses without this flag).
         #[arg(long)]
         allow_live: bool,
+        /// Router port to target (default 3000).
         #[arg(long, default_value="3000")]
         port: Option<u16>,
+        /// Router base URL override (default http://127.0.0.1:3000).
         #[arg(long)]
         base_url: Option<String>,
     },
+    /// Manage device-login accounts (kiro / antigravity) via the OAuth device flow.
     #[command(name="device")]
     Device {
         #[command(subcommand)]
@@ -73,9 +109,12 @@ enum DeviceCmd {
     /// Perform a device login for a provider (kiro/antigravity). Prints the
     /// verification URL + user code and polls until authorization completes.
     Login {
+        /// Device provider name (kiro or antigravity).
         provider: String,
+        /// Account id / email for the device provider.
         #[arg(long)]
         account: String,
+        /// Optional friendly display name.
         #[arg(long)]
         name: Option<String>,
     },
@@ -83,8 +122,10 @@ enum DeviceCmd {
     List,
     /// Remove a device account.
     Logout {
+        /// Device provider name.
         #[arg(long)]
         provider: String,
+        /// Account id to remove.
         #[arg(long)]
         account: String,
     },
@@ -92,20 +133,27 @@ enum DeviceCmd {
 
 #[derive(Subcommand)]
 enum KeysCmd {
+    /// Add one or more API keys to a provider (hidden input, stored 0600).
     Add { provider: String },
 }
 
 #[derive(Subcommand)]
 enum TierCmd {
+    /// Add a provider/model entry to a tier (creates the tier if missing).
     Add {
+        /// Tier name to create or append to.
         name: String,
+        /// Provider that serves the model.
         #[arg(long)]
         provider: String,
+        /// Model id to add to the tier.
         #[arg(long)]
         model: String,
+        /// Reserved / unused extra spec (kept for forward-compat).
         #[arg(long)]
         more: Option<String>,
     },
+    /// List all configured tiers and their entries.
     List,
 }
 

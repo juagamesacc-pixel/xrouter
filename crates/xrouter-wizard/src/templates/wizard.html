@@ -34,7 +34,7 @@ header p{color:var(--fg3);font-size:.9rem}
 .steps{display:flex;gap:4px;margin-bottom:36px;animation:fadeUp .6s var(--ease) .1s both}
 .steps .dot{height:4px;flex:1;border-radius:4px;background:var(--bg4);transition:background .4s var(--ease)}
 .steps .dot.active{background:var(--accent)}.steps .dot.done{background:var(--green)}
-.section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;margin-bottom:20px;animation:fadeUp .5s var(--ease) both;transition:border-color .25s,box-shadow .25s}
+.section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;margin-bottom:20px;animation:fadeUp .5s var(--ease) both;transition:border-color .25s,box-shadow .25s;max-width:100%;overflow:hidden}
 .section:hover{border-color:var(--border2)}
 .section h2{font-size:1.05rem;font-weight:600;margin-bottom:4px}
 .section .sub{color:var(--fg3);font-size:.82rem;margin-bottom:18px}
@@ -56,13 +56,15 @@ label.field .label{display:block;font-size:.82rem;font-weight:500;color:var(--fg
 input[type="text"],input[type="number"],input[type="password"],select,textarea{width:100%;padding:10px 14px;font-size:.9rem;font-family:var(--font);background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
 input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.15)}
 input::placeholder{color:var(--fg3)}
-.key-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);animation:fadeIn .3s var(--ease) both}
+.key-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);animation:fadeIn .3s var(--ease) both;min-width:0;overflow:hidden}
 .key-row:last-child{border-bottom:none}
-.key-row input{flex:1;font-family:var(--mono);font-size:.85rem}
-.key-row .masked{color:var(--fg3);font-family:var(--mono);font-size:.85rem;flex:1;padding:10px 14px;background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--radius-xs)}
+.key-row input{flex:1 1 0;min-width:0;font-family:var(--mono);font-size:.85rem}
+.key-row .masked{color:var(--fg3);font-family:var(--mono);font-size:.85rem;flex:1 1 0;min-width:0;padding:10px 14px;background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--radius-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.key-row .masked.visible{color:var(--fg);overflow-x:auto;text-overflow:clip}
 .eye-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:var(--bg4);border:1.5px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;flex-shrink:0;transition:all .2s var(--ease)}
 .eye-btn:hover{background:var(--bg3);border-color:var(--border2)}
 .eye-btn svg{width:18px;height:18px;stroke:var(--fg2);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.key-row .btn-danger{flex-shrink:0}
 .key-count{font-size:.78rem;color:var(--fg3);margin-top:6px}
 .ban-row{display:flex;align-items:center;gap:12px;margin-top:16px;padding:12px 16px;background:var(--bg3);border-radius:var(--radius-sm);border:1px solid var(--border)}
 .ban-row label{margin:0;white-space:nowrap;font-size:.85rem;color:var(--fg2);font-weight:500}
@@ -144,6 +146,9 @@ input::placeholder{color:var(--fg3)}
 .modal h3{font-size:1.05rem;font-weight:600;margin-bottom:8px;position:relative}
 .modal p{font-size:.86rem;color:var(--fg2);line-height:1.6;word-break:break-word;position:relative;max-height:50vh;overflow-y:auto}
 .modal .modal-actions{margin-top:20px;display:flex;justify-content:flex-end;position:relative}
+.segmented{display:inline-flex;background:var(--bg4);border:1px solid var(--border);border-radius:var(--radius-xs);padding:2px;gap:2px;flex-shrink:0}.segmented button{border:none;background:transparent;color:var(--fg3);font-family:var(--font);font-size:.8rem;font-weight:600;padding:6px 16px;border-radius:6px;cursor:pointer;transition:all .2s var(--ease)}.segmented button.active{background:var(--bg);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.model-chip{display:inline-flex;align-items:center;gap:6px;font-size:.76rem;font-family:var(--mono);padding:4px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:20px;color:var(--fg2)}
+.device-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 </style>
 </head>
 <body>
@@ -200,6 +205,22 @@ input::placeholder{color:var(--fg3)}
         <button class="btn btn-primary" id="saveCustom">Create provider</button>
       </div>
     </div>
+    <div class="section" style="animation-delay:.35s">
+      <h2>Device Login</h2>
+      <p class="sub">Authenticate a device provider (kiro / antigravity) via the OAuth device flow</p>
+      <div class="device-row">
+        <label class="field" style="min-width:150px;margin:0"><span class="label">Provider</span>
+          <select id="deviceProvider"><option value="kiro">kiro</option><option value="antigravity">antigravity</option></select>
+        </label>
+        <label class="field" style="flex:1;min-width:170px;margin:0"><span class="label">Account ID</span>
+          <input type="text" id="deviceAccount" placeholder="email or account id"></label>
+        <label class="field" style="flex:1;min-width:170px;margin:0"><span class="label">Display name (optional)</span>
+          <input type="text" id="deviceName" placeholder="Friendly name"></label>
+        <button class="btn btn-primary" id="deviceLoginBtn">Login</button>
+      </div>
+      <div id="deviceStatus" style="margin-top:12px;font-size:.85rem;color:var(--fg2)"></div>
+      <div id="deviceAccounts" style="margin-top:14px"></div>
+    </div>
   </div>
 
   <!-- ══ MODELS ══ -->
@@ -217,11 +238,15 @@ input::placeholder{color:var(--fg3)}
       </div>
       <div id="modelArea" style="display:none">
         <div class="model-toolbar">
+          <div class="segmented" id="freeToggle">
+            <button type="button" data-mode="free" class="active">Free</button>
+            <button type="button" data-mode="all">All</button>
+          </div>
           <input type="text" id="modelSearch" placeholder="Search models by name or ID…">
           <div class="count" id="modelCount"></div>
           <button class="btn btn-secondary btn-sm" id="selectAllBtn">Select all</button>
-          <button class="btn btn-secondary btn-sm" id="freeOnlyBtn">Free only</button>
         </div>
+        <div id="savedModels" style="margin-bottom:14px"></div>
         <div class="model-list" id="modelList"></div>
         <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
           <input type="text" id="customModelInput" placeholder="Or add a custom model ID manually…" style="flex:1">
@@ -289,12 +314,12 @@ input::placeholder{color:var(--fg3)}
 <div class="toast" id="toast"></div>
 
 <script>
-const S={providers:{},tiers:[],selectedProvider:null,modelCache:{},selectedModels:new Set(),customModels:[],metricsData:null,freeOnly:false};
+const S={providers:{},tiers:[],selectedProvider:null,modelCache:{},selectedModels:new Set(),customModels:[],metricsData:null,freeOnly:true};
 const BUILTINS={'opencode-zen':{kind:'openai-compat',base_url:'https://opencode.ai/zen/v1',keys:[],ban_duration:300,enabled:true},'openrouter':{kind:'openai-compat',base_url:'https://openrouter.ai/api/v1',keys:[],ban_duration:300,enabled:true},'together-image':{kind:'openai-compat',base_url:'https://api.together.ai/v1',keys:[],ban_duration:300,enabled:true}};
 const EYE_OPEN=`<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_CLOSED=`<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
-document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();initTabs();initFetchModels();initTierEditor();initMetrics();updateSteps();setupSync()});
+document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();initTabs();initFetchModels();initTierEditor();initMetrics();initDeviceLogin();updateSteps();setupSync()});
 function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.providers)){S.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],ban_duration:v.quota_ban_secs||300}};if(d.tiers)S.tiers=d.tiers.map(t=>({name:t.name,entries:(t.entries||[]).map(e=>({provider:e.provider,model:e.model,is_default:!!e.is_default,weight:e.weight||1,endpoint_id:e.endpoint_id||''}))}));if(d.settings&&d.settings.default_tier)S.default_tier=d.settings.default_tier}
 async function loadState(){try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();applyServerConfig(d)}}catch(e){}for(const[k,v]of Object.entries(BUILTINS))if(!S.providers[k])S.providers[k]={...v}}
 function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
@@ -303,7 +328,7 @@ function saveState(){persist();try{localStorage.setItem('xrouter_wizard',JSON.st
 let syncChannel=null;
 function setupSync(){try{syncChannel=new BroadcastChannel('wizard-sync');syncChannel.onmessage=e=>{if(e.data==='reload')syncFromServer()}}catch(e){}window.addEventListener('storage',e=>{if(e.key==='wizard_sync')syncFromServer()});window.addEventListener('focus',()=>syncFromServer())}
 async function syncFromServer(){try{const r=await fetch('/api/config');if(!r.ok)return;const d=await r.json();applyServerConfig(d);renderAll()}catch(e){}}
-function renderAll(){renderProviders();renderTiers();populateFetchSelect();updateSteps()}
+function renderAll(){renderProviders();renderTiers();renderSavedModels();populateFetchSelect();updateSteps()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg,err){const el=document.getElementById('toast');el.textContent=(err?'✕ ':'✔ ')+msg;el.className='toast show'+(err?' error':'');setTimeout(()=>el.classList.remove('show'),3000)}
 function showModal(title,msg){const o=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent=title;document.getElementById('modalMsg').textContent=msg;o.classList.add('show');o.style.display='flex'}
@@ -331,7 +356,7 @@ function renderKeys(keys){const l=document.getElementById('keyList');l.innerHTML
 const m=key.length>8?key.slice(0,4)+'…'+key.slice(-4):'••••••••';
 r.innerHTML=`<div class="masked">${esc(m)}</div><div class="eye-btn" role="button" tabindex="0" aria-label="Toggle key ${i+1} visibility">${EYE_CLOSED}</div><button class="btn btn-danger btn-sm" style="padding:6px 10px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`;
 const eye=r.querySelector('.eye-btn'),mask=r.querySelector('.masked');let vis=false;
-eye.addEventListener('click',()=>{vis=!vis;mask.textContent=vis?key:m;mask.style.color=vis?'var(--fg)':'';eye.innerHTML=vis?EYE_OPEN:EYE_CLOSED});
+eye.addEventListener('click',()=>{vis=!vis;mask.textContent=vis?key:m;mask.classList.toggle('visible',vis);eye.innerHTML=vis?EYE_OPEN:EYE_CLOSED});
 eye.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();eye.click()}});
 r.querySelector('.btn-danger').addEventListener('click',()=>{S.providers[S.selectedProvider].keys.splice(i,1);saveState();renderKeys(S.providers[S.selectedProvider].keys);toast('Key removed')});
 l.appendChild(r)});
@@ -345,10 +370,16 @@ document.getElementById('saveCustom').addEventListener('click',()=>{const id=doc
 if(!id||!url){toast('Fill in all fields',true);return}S.providers[id]={kind,base_url:url,keys:[],ban_duration:300,enabled:true};saveState();
 document.getElementById('customProviderForm').style.display='none';S.selectedProvider=id;renderProviders();showProviderConfig(id);toast('Custom provider created')});
 
+// ══ DEVICE LOGIN (kiro / antigravity) ══
+function initDeviceLogin(){const b=document.getElementById('deviceLoginBtn');if(b)b.onclick=deviceLogin;loadDeviceAccounts()}
+async function deviceLogin(){const p=document.getElementById('deviceProvider').value,a=document.getElementById('deviceAccount').value.trim(),n=document.getElementById('deviceName').value.trim(),s=document.getElementById('deviceStatus');if(!a){toast('Enter an account id',true);return}s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p,account_id:a,display_name:n})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}devicePoll(d,s)}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
+function devicePoll(d,s){const o=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent='Device Login — '+d.provider;document.getElementById('modalMsg').innerHTML='Visit <a href="'+esc(d.verification_uri)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(d.verification_uri)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';o.classList.add('show');o.style.display='flex';fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';document.getElementById('modalMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Account <strong>'+esc(pd.account.account_id)+'</strong> connected.</div>';toast('Device account connected');if(s)s.textContent='';loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
+async function loadDeviceAccounts(){const el=document.getElementById('deviceAccounts');if(!el)return;try{const r=await fetch('/api/device/accounts');if(!r.ok)return;const d=await r.json();if(!d.accounts||!d.accounts.length){el.innerHTML='<div style="font-size:.8rem;color:var(--fg3)">No device accounts connected.</div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Connected device accounts</div>'+d.accounts.map(a=>'<div class="key-row"><div class="masked">'+esc(a.provider)+' · '+esc(a.account_id)+'</div></div>').join('')}catch(e){}}
+
 // ══ MODELS ══
 function populateFetchSelect(){const s=document.getElementById('fetchProvider'),pv=s.value;s.innerHTML='';Object.keys(S.providers).forEach(id=>{const o=document.createElement('option');o.value=id;o.textContent=id+(S.providers[id].keys.length?'':' (no keys)');s.appendChild(o)});if(pv&&S.providers[pv])s.value=pv}
 function initFetchModels(){document.getElementById('fetchModelsBtn').addEventListener('click',fetchModels);document.getElementById('modelSearch').addEventListener('input',filterModels);
-document.getElementById('freeOnlyBtn').addEventListener('click',()=>{S.freeOnly=!S.freeOnly;const b=document.getElementById('freeOnlyBtn');b.classList.toggle('btn-primary',S.freeOnly);b.classList.toggle('btn-secondary',!S.freeOnly);b.textContent=S.freeOnly?'Showing free':'Free only';filterModels()});
+document.querySelectorAll('#freeToggle button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#freeToggle button').forEach(x=>x.classList.remove('active'));b.classList.add('active');S.freeOnly=(b.dataset.mode==='free');filterModels()}));
 document.getElementById('selectAllBtn').addEventListener('click',()=>{document.querySelectorAll('#modelList input[type="checkbox"]').forEach(c=>{c.checked=true;S.selectedModels.add(c.dataset.id)})});
 document.getElementById('addCustomModelBtn').addEventListener('click',()=>{const i=document.getElementById('customModelInput'),v=i.value.trim();if(!v)return;if(S.customModels.includes(v)){toast('Already added',true);return}S.customModels.push(v);S.selectedModels.add(v);i.value='';filterModels();toast('Custom model added')});
 document.getElementById('confirmModelsBtn').addEventListener('click',confirmModels)}
@@ -357,8 +388,8 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
  async function fetchModels(){const pid=document.getElementById('fetchProvider').value,ftype=document.getElementById('fetchType').value;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
   const btn=document.getElementById('fetchModelsBtn');btn.disabled=true;btn.innerHTML=`Fetching<span class="dots"><span></span><span></span><span></span></span>`;
   try{const r=await fetch('/api/models/fetch?provider='+encodeURIComponent(pid));const d=await r.json();
-  if(d.error){showModal('Model fetch failed',d.error);return}
-  let ms=(d.data||[]).map(m=>({id:m.id||m.name||String(m),owned_by:m.owned_by||''}));
+   if(d.error){showModal('Model fetch failed',d.error);return}
+   let ms=(d.data||[]).map(m=>({id:m.id||m.name||String(m),owned_by:m.owned_by||'',free:m.free===true}));
   // Image-model heuristic (flux/sdxl/dall-e/stable-diffusion/imagen/ideogram/image)
   const isImg=id=>{const n=String(id).toLowerCase();return n.includes('flux')||n.includes('sdxl')||n.includes('dall-e')||n.includes('dall_e')||n.includes('stable-diffusion')||n.includes('stable_diffusion')||n.includes('imagen')||n.includes('ideogram')||n.includes('image')};
   ms=ms.map(m=>({...m,image:isImg(m.id)}));
@@ -367,7 +398,7 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
   catch(e){showModal('Model fetch failed',e.message)}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
 
 function filterModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=document.getElementById('fetchProvider').value,models=S.modelCache[pid]||[],list=document.getElementById('modelList');list.innerHTML='';let cnt=0;
-const all=[...models.filter(m=>!S.freeOnly||isFree(m.id)).filter(m=>!q||m.id.toLowerCase().includes(q)||(m.owned_by||'').toLowerCase().includes(q)).map(m=>({...m,type:isFree(m.id)?'free':'paid'})),...S.customModels.filter(id=>!q||id.toLowerCase().includes(q)).map(id=>({id,type:'custom'}))];
+const all=[...models.filter(m=>!S.freeOnly||(m.free===true||isFree(m.id))).filter(m=>!q||m.id.toLowerCase().includes(q)||(m.owned_by||'').toLowerCase().includes(q)).map(m=>({...m,type:(m.free===true||isFree(m.id))?'free':'paid'})),...S.customModels.filter(id=>!q||id.toLowerCase().includes(q)).map(id=>({id,type:'custom'}))];
  all.forEach(m=>{cnt++;const it=document.createElement('div');it.className='model-item';
  const imgTag=m.image?'<span class="free-tag" style="background:rgba(236,72,153,.12);color:#ec4899">IMG</span>':'';
  it.innerHTML=`<input type="checkbox" data-id="${esc(m.id)}" ${S.selectedModels.has(m.id)?'checked':''}><div class="model-id">${esc(m.id)}</div>${imgTag}${m.type==='free'?'<span class="free-tag">FREE</span>':m.type==='custom'?'<span class="free-tag" style="background:rgba(99,102,241,.1);color:var(--accent2)">custom</span>':'<span class="paid-tag">paid</span>'}`;
@@ -399,6 +430,9 @@ c.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='
 c.addEventListener('dragleave',()=>c.classList.remove('drag-over'));
 c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
 l.appendChild(c)})}
+
+// ══ SAVED / BUILTIN MODELS ══
+function renderSavedModels(){const el=document.getElementById('savedModels');if(!el)return;const seen=new Set(),ch=[];S.tiers.forEach(t=>t.entries.forEach(e=>{const k=e.provider+'/'+e.model;if(!seen.has(k)){seen.add(k);ch.push(e)}}));if(!ch.length){el.innerHTML='';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Saved / built-in models</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+ch.map(c=>'<span class="model-chip">'+esc(c.provider)+'/'+esc(c.model)+'</span>').join('')+'</div>'}
 
 // ══ METRICS ══
 function initMetrics(){document.getElementById('refreshMetrics').addEventListener('click',loadMetrics);if(S.metricsData)renderMetrics(S.metricsData);loadMetrics()}
