@@ -141,9 +141,9 @@ input::placeholder{color:var(--fg3)}
 @media(max-width:640px){.container{padding:20px 16px 0}.provider-grid{grid-template-columns:1fr 1fr}.ban-row{flex-wrap:wrap}.model-toolbar{flex-direction:column}.tier-entry{flex-wrap:wrap}.metrics-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:400px){.provider-grid{grid-template-columns:1fr}}
 @media(max-width:480px){.tier-header{gap:6px}.tier-header .add-entry-btn{margin-left:0!important}.tier-header .tier-name{min-width:50px}.tier-header .tier-count{font-size:.68rem;padding:2px 6px}}
-.modal-overlay{position:fixed;inset:0;background:rgba(5,5,8,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:2000;animation:fadeIn .2s var(--ease) both;padding:24px}
+.modal-overlay{position:fixed;inset:0;background:rgba(5,5,8,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;z-index:2000;animation:fadeIn .2s var(--ease) both;padding:24px}
 .modal-overlay.show{display:flex}
-.modal{width:100%;max-width:440px;background:linear-gradient(160deg,var(--bg2),var(--bg3));border:1px solid var(--border2);border-radius:var(--radius);padding:28px;box-shadow:var(--shadow-lg);animation:fadeUp .3s var(--ease-b) both;position:relative;overflow:hidden}
+.modal{width:100%;max-width:440px;background:linear-gradient(160deg,var(--bg2),var(--bg3));border:1px solid var(--border2);border-radius:var(--radius);padding:28px;box-shadow:var(--shadow-lg);animation:fadeUp .3s var(--ease-b) both;position:relative;overflow:hidden;pointer-events:auto}
 .modal::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 70% 50% at 50% 0%,rgba(99,102,241,.14),transparent);pointer-events:none}
 .modal .modal-icon{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);margin-bottom:14px;position:relative}
 .modal .modal-icon svg{width:22px;height:22px;stroke:var(--red);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -312,14 +312,6 @@ input::placeholder{color:var(--fg3)}
     </div>
   </div>
 </div>
-<div class="modal-overlay" id="modalOverlay">
-  <div class="modal">
-    <div class="modal-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
-    <h3 id="modalTitle">Notice</h3>
-    <p id="modalMsg"></p>
-    <div class="modal-actions"><button class="btn btn-primary" id="modalClose">OK</button></div>
-  </div>
-</div>
 <div class="modal-overlay" id="dialogOverlay">
   <div class="modal">
     <div class="modal-icon" id="dialogIcon" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.25)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
@@ -349,19 +341,19 @@ async function syncFromServer(){try{const r=await fetch('/api/config');if(!r.ok)
 function renderAll(){renderProviders();renderTiers();renderSavedModels();populateFetchSelect();updateSteps()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg,err){const el=document.getElementById('toast');el.textContent=(err?'✕ ':'✔ ')+msg;el.className='toast show'+(err?' error':'');setTimeout(()=>el.classList.remove('show'),3000)}
-function showModal(title,msg){const o=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent=title;document.getElementById('modalMsg').textContent=msg;o.classList.add('show');o.style.display='flex'}
-function hideModal(){const o=document.getElementById('modalOverlay');o.classList.remove('show');o.style.display='none'}
-document.getElementById('modalClose').addEventListener('click',hideModal);
-document.getElementById('modalOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('modalOverlay'))hideModal()});
+function showModal(title,msg){openDialog({type:'alert',title:title||'Notice',msg:String(msg||'')})}
+function hideModal(){closeDialog(true)}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&dialogResolver)closeDialog(dialogType==='alert'?true:null)});
 
 // ── Custom Promise-based dialogs (replace the native browser prompt/confirm/alert) ──
 let dialogResolver=null,dialogType='alert';
 function openDialog(opts){
   return new Promise(resolve=>{
+    if(dialogResolver){dialogResolver(null);dialogResolver=null}
     dialogResolver=resolve;dialogType=opts.type||'alert';
     const o=document.getElementById('dialogOverlay');
     document.getElementById('dialogTitle').textContent=opts.title||'Notice';
-    document.getElementById('dialogMsg').innerHTML=opts.msg||'';
+    document.getElementById('dialogMsg').innerHTML=opts.msg!=null?opts.msg:String(opts.message||'');
     const icon=document.getElementById('dialogIcon');
     icon.style.display=(opts.icon===false)?'none':'flex';
     const input=document.getElementById('dialogInput');
@@ -432,7 +424,7 @@ document.getElementById('customProviderForm').style.display='none';S.selectedPro
 // ══ DEVICE LOGIN (kiro / antigravity) ══
 function initDeviceLogin(){const b=document.getElementById('deviceLoginBtn');if(b)b.onclick=deviceLogin;loadDeviceAccounts()}
 async function deviceLogin(){const p=document.getElementById('deviceProvider').value,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}devicePoll(d,s)}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
-function devicePoll(d,s){const o=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent='Device Login — '+d.provider;document.getElementById('modalMsg').innerHTML='Visit <a href="'+esc(d.verification_uri)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(d.verification_uri)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';o.classList.add('show');o.style.display='flex';fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';const id=pd.identity||(pd.account&&pd.account.account_id)||'';document.getElementById('modalMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(id)+'</strong>.</div>';if(s)s.textContent='Connected as '+id;toast('Device account connected');loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
+function devicePoll(d,s){const html='Visit <a href="'+esc(d.verification_uri)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(d.verification_uri)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';openDialog({type:'alert',title:'Device Login — '+d.provider,msg:html,icon:false});fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';const id=pd.identity||(pd.account&&pd.account.account_id)||'';document.getElementById('dialogMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(id)+'</strong>.</div>';if(s)s.textContent='Connected as '+id;toast('Device account connected');loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
 async function loadDeviceAccounts(){const el=document.getElementById('deviceAccounts');if(!el)return;try{const r=await fetch('/api/device/accounts');if(!r.ok)return;const d=await r.json();if(!d.accounts||!d.accounts.length){el.innerHTML='<div style="font-size:.8rem;color:var(--fg3)">No device accounts connected.</div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Connected device accounts</div>'+d.accounts.map(a=>'<div class="key-row"><div class="masked">'+esc(a.provider)+' · '+esc(a.account_id)+'</div></div>').join('')}catch(e){}}
 
 // ══ MODELS ══

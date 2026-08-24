@@ -2,7 +2,6 @@ pub mod translate;
 pub mod metrics;
 pub mod track;
 
-use std::convert::Infallible;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -227,6 +226,7 @@ pub fn create_router(state: AppState) -> Router {
     #[cfg_attr(not(feature = "bench"), allow(unused_mut))]
     let mut router = Router::new()
         .route("/v1/chat/completions", post(handle_chat_completions))
+        .route("/v1/responses", post(handle_responses))
         .route("/v1/messages", post(handle_messages))
         .route("/v1/images/generations", post(handle_images_generations))
         .route("/v1/models", get(handle_models))
@@ -565,7 +565,16 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     None
 }
 
-async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap, is_anthropic_ingress: bool) -> Response {
+async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap, is_anthropic_ingress: bool, is_responses_ingress: bool) -> Response {
+    // Responses API ingress: translate the Responses request into a Chat
+    // Completions request so it rides the exact same routing/quota/failover
+    // path. (We always translate to chat/completions upstream for v1 — see the
+    // note in translate.rs.)
+    let body = if is_responses_ingress {
+        crate::translate::responses_to_chat(&body)
+    } else {
+        body
+    };
     state.metrics.inc_requests();
     let start = std::time::Instant::now();
     // auth check
@@ -764,34 +773,39 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
             if streaming {
                 let need_translate = is_anthropic_ingress != upstream_is_anthropic;
                 let headers_out = build_sse_headers();
-                if need_translate {
+                // Build the inner stream in Chat-Completions SSE form.
+                let inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> = if need_translate {
                     // Real chunked streaming translation: map each upstream
                     // chunk through a stateful translator so we never buffer
                     // the whole SSE stream and never lose tool calls.
                     let translator = StreamTranslator::new(!upstream_is_anthropic, is_anthropic_ingress);
-                    let inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
-                        Box::pin(upstream.response.bytes_stream());
-                    let stream = futures::stream::unfold((inner, translator, false), |(mut inner, mut translator, flushed)| async move {
+                    let raw = Box::pin(upstream.response.bytes_stream());
+                    Box::pin(futures::stream::unfold((raw, translator, false), |(mut inner, mut translator, flushed)| async move {
                         if flushed { return None; }
                         match inner.as_mut().next().await {
                             Some(result) => {
                                 let chunk = result.unwrap_or_default();
                                 let translated = translator.push(&chunk);
-                                Some((Ok::<_, Infallible>(Bytes::from(translated)), (inner, translator, false)))
+                                Some((Ok::<_, reqwest::Error>(Bytes::from(translated)), (inner, translator, false)))
                             }
                             None => {
                                 let translated = translator.flush();
-                                Some((Ok::<_, Infallible>(Bytes::from(translated)), (inner, translator, true)))
+                                Some((Ok::<_, reqwest::Error>(Bytes::from(translated)), (inner, translator, true)))
                             }
                         }
-                    });
-                    return (StatusCode::OK, headers_out, Body::from_stream(stream)).into_response();
+                    }))
                 } else {
                     // Real streaming passthrough: forward upstream bytes stream
                     // without buffering the whole body first.
-                    let stream = upstream.response.bytes_stream();
-                    return (StatusCode::OK, headers_out, Body::from_stream(stream)).into_response();
-                }
+                    Box::pin(upstream.response.bytes_stream())
+                };
+                // For Responses ingress, map Chat-Completions SSE -> Responses SSE.
+                let stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> = if is_responses_ingress {
+                    responses_stream_map(inner)
+                } else {
+                    inner
+                };
+                return (StatusCode::OK, headers_out, Body::from_stream(stream)).into_response();
             } else {
                 let body_bytes = upstream.response.bytes().await.unwrap_or_default();
                 let translated = if is_anthropic_ingress != upstream_is_anthropic {
@@ -799,9 +813,14 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
                 } else {
                     body_bytes
                 };
+                let final_body = if is_responses_ingress {
+                    chat_to_responses_bytes(&translated)
+                } else {
+                    translated
+                };
                 let mut headers_out = HeaderMap::new();
                 headers_out.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
-                return (StatusCode::OK, headers_out, Body::from(translated)).into_response();
+                return (StatusCode::OK, headers_out, Body::from(final_body)).into_response();
             }
         } else if upstream.status == 401 || upstream.status == 403 {
             if is_device {
@@ -1039,6 +1058,157 @@ impl StreamTranslator {
     }
 }
 
+/// Stateful mapper that turns a Chat-Completions SSE stream into an OpenAI
+/// Responses API SSE stream (`response.created`, `response.output_text.delta`,
+/// `response.completed`). Buffers partial SSE lines across network chunks so
+/// cross-chunk JSON is never split.
+struct ResponsesStreamTranslator {
+    started: bool,
+    finished: bool,
+    response_id: String,
+    item_id: String,
+    model: String,
+    text: String,
+    usage_in: u64,
+    usage_out: u64,
+    line_buf: String,
+}
+
+impl ResponsesStreamTranslator {
+    fn new() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        Self {
+            started: false,
+            finished: false,
+            response_id: format!("resp_{}", nanos),
+            item_id: format!("item_{}", nanos),
+            model: "unknown".to_string(),
+            text: String::new(),
+            usage_in: 0,
+            usage_out: 0,
+            line_buf: String::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> String {
+        let mut out = String::new();
+        if !self.started {
+            self.started = true;
+            let obj = translate::responses_object(&self.response_id, &self.model, "", 0, 0, "in_progress");
+            if let Ok(s) = serde_json::to_string(&json!({ "type": "response.created", "response": obj })) {
+                out.push_str(&format!("event: response.created\ndata: {}\n\n", s));
+            }
+        }
+        let text = String::from_utf8_lossy(chunk);
+        self.line_buf.push_str(&text);
+        while let Some(pos) = self.line_buf.find('\n') {
+            let mut line = self.line_buf[..pos].to_string();
+            self.line_buf.drain(..=pos);
+            if line.ends_with('\r') { line.pop(); }
+            if line.starts_with("data: ") {
+                let data = line.trim_start_matches("data: ").trim();
+                if data == "[DONE]" { continue; }
+                if let Ok(v) = serde_json::from_str::<Value>(data) {
+                    if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
+                        if self.model == "unknown" { self.model = m.to_string(); }
+                    }
+                    if let Some(content) = v.get("choices")
+                        .and_then(|c| c.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|ch| ch.get("delta"))
+                        .and_then(|d| d.get("content"))
+                        .and_then(|c| c.as_str())
+                    {
+                        if !content.is_empty() {
+                            self.text.push_str(content);
+                            let delta = json!({
+                                "type": "response.output_text.delta",
+                                "delta": content,
+                                "item_id": self.item_id,
+                                "output_index": 0,
+                                "content_index": 0
+                            });
+                            if let Ok(s) = serde_json::to_string(&delta) {
+                                out.push_str(&format!("event: response.output_text.delta\ndata: {}\n\n", s));
+                            }
+                        }
+                    }
+                    if let Some(usage) = v.get("usage") {
+                        let in_t = usage.get("prompt_tokens").and_then(|x| x.as_u64())
+                            .or_else(|| usage.get("input_tokens").and_then(|x| x.as_u64())).unwrap_or(0);
+                        let out_t = usage.get("completion_tokens").and_then(|x| x.as_u64())
+                            .or_else(|| usage.get("output_tokens").and_then(|x| x.as_u64())).unwrap_or(0);
+                        if in_t > 0 { self.usage_in = in_t; }
+                        if out_t > 0 { self.usage_out = out_t; }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn flush(&mut self) -> String {
+        let mut out = String::new();
+        if !self.line_buf.is_empty() {
+            let line = self.line_buf.clone();
+            self.line_buf.clear();
+            if line.starts_with("data: ") {
+                let data = line.trim_start_matches("data: ").trim();
+                if data != "[DONE]" {
+                    if let Ok(v) = serde_json::from_str::<Value>(data) {
+                        if let Some(usage) = v.get("usage") {
+                            let in_t = usage.get("prompt_tokens").and_then(|x| x.as_u64())
+                                .or_else(|| usage.get("input_tokens").and_then(|x| x.as_u64())).unwrap_or(0);
+                            let out_t = usage.get("completion_tokens").and_then(|x| x.as_u64())
+                                .or_else(|| usage.get("output_tokens").and_then(|x| x.as_u64())).unwrap_or(0);
+                            if in_t > 0 { self.usage_in = in_t; }
+                            if out_t > 0 { self.usage_out = out_t; }
+                        }
+                    }
+                }
+            }
+        }
+        if !self.finished {
+            self.finished = true;
+            let obj = translate::responses_object(&self.response_id, &self.model, &self.text, self.usage_in, self.usage_out, "completed");
+            if let Ok(s) = serde_json::to_string(&json!({ "type": "response.completed", "response": obj })) {
+                out.push_str(&format!("event: response.completed\ndata: {}\n\n", s));
+            }
+        }
+        out
+    }
+}
+
+/// Wrap a Chat-Completions SSE stream into a Responses API SSE stream.
+fn responses_stream_map(
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> {
+    let translator = ResponsesStreamTranslator::new();
+    Box::pin(futures::stream::unfold((inner, translator, false), move |(mut inner, mut translator, flushed)| async move {
+        if flushed {
+            return None;
+        }
+        match inner.as_mut().next().await {
+            Some(result) => {
+                match result {
+                    Ok(chunk) => {
+                        let out = translator.push(&chunk);
+                        Some((Ok::<_, reqwest::Error>(Bytes::from(out)), (inner, translator, false)))
+                    }
+                    Err(e) => Some((Err(e), (inner, translator, true))),
+                }
+            }
+            None => {
+                let out = translator.flush();
+                Some((Ok::<_, reqwest::Error>(Bytes::from(out)), (inner, translator, true)))
+            }
+        }
+    }))
+}
+
 fn translate_non_stream_response(body: &[u8], ingress_is_anthropic: bool, upstream_is_anthropic: bool) -> Bytes {
     // catch_unwind around translation so bad payload doesn't panic worker
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -1079,12 +1249,26 @@ fn translate_non_stream_response(body: &[u8], ingress_is_anthropic: bool, upstre
     }
 }
 
+/// Translate a Chat-Completions response body (bytes) into a Responses API
+/// response. Never panics — on any failure the original bytes are returned.
+fn chat_to_responses_bytes(body: &[u8]) -> Bytes {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let v: Value = serde_json::from_slice(body).unwrap_or(json!({}));
+        let out = crate::translate::chat_to_responses(&v);
+        Bytes::from(serde_json::to_vec(&out).unwrap())
+    }));
+    match result {
+        Ok(b) => b,
+        Err(_) => Bytes::copy_from_slice(body),
+    }
+}
+
 async fn handle_chat_completions(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let val: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error":{"type":"invalid_request_error","message": e.to_string()}}))).into_response(),
     };
-    route_openai_request(&state, val, headers, false).await
+    route_openai_request(&state, val, headers, false, false).await
 }
 
 async fn handle_messages(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -1092,7 +1276,18 @@ async fn handle_messages(State(state): State<AppState>, headers: HeaderMap, body
         Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"type":"error","error":{"type":"invalid_request_error","message": e.to_string()}}))).into_response(),
     };
-    route_openai_request(&state, val, headers, true).await
+    route_openai_request(&state, val, headers, true, false).await
+}
+
+async fn handle_responses(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let val: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error":{"type":"invalid_request_error","message": e.to_string()}}))).into_response(),
+    };
+    // Route through the same Chat-Completions path; the request is translated
+    // to chat/completions inside route_openai_request and the response is
+    // translated back to the Responses shape on egress.
+    route_openai_request(&state, val, headers, false, true).await
 }
 
 // --- Image generation route (lazy; off the hot chat path) -------------------

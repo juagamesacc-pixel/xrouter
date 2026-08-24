@@ -5,6 +5,7 @@ use xrouter_core::{is_free, EndpointId};
 use xrouter_providers::{OpenAiCompatAdapter, RawModel, ModelCache, Provider, make_provider};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 /// xrouter — a blazing-fast LLM router that load-balances chat/model requests
@@ -203,7 +204,8 @@ async fn main() -> anyhow::Result<()> {
                 Ok(w) => { println!("hot-reload enabled watching {}", cfg_path.display()); Some(w) },
                 Err(e) => { eprintln!("hot-reload disabled: {}", e); None }
             };
-            println!("xrouter serving on http://{}", addr);
+            print_banner(&addr, track, bench);
+            println!("xrouter listening on http://{}", addr);
             println!("tiers: {}", state.get_config().tiers.len());
             // graceful shutdown handled inside server
             xrouter_server::run_server(addr, state).await?;
@@ -250,6 +252,102 @@ async fn main() -> anyhow::Result<()> {
         },
     }
     Ok(())
+}
+
+/// Print a premium, box-drawn startup banner with the actual host:port baked
+/// into the URLs. Respects `NO_COLOR`/non-TTY by dropping ANSI colors. A
+/// machine-readable `xrouter listening on ...` line is printed separately (in
+/// `main`) for agents to parse.
+fn print_banner(addr: &str, track: bool, bench: bool) {
+    let use_color = std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none();
+    let v = |s: &str| if use_color { format!("\x1b[38;5;141m{}\x1b[0m", s) } else { s.to_string() };
+    let c = |s: &str| if use_color { format!("\x1b[38;5;51m{}\x1b[0m", s) } else { s.to_string() };
+    let e = |s: &str| if use_color { format!("\x1b[38;5;42m{}\x1b[0m", s) } else { s.to_string() };
+    let bd = |s: &str| if use_color { format!("\x1b[38;5;51m{}\x1b[0m", s) } else { s.to_string() };
+
+    let base = format!("http://{}", addr);
+
+    // (plain, colored) line pairs. Plain is used for width/padding so ANSI
+    // escape codes never throw off alignment.
+    let mut plain: Vec<String> = Vec::new();
+    let mut colored: Vec<String> = Vec::new();
+
+    let p = "  ⚡ xrouter v0.1.0";
+    plain.push(p.to_string());
+    colored.push(format!("  {} {}", "⚡", v("xrouter v0.1.0")));
+
+    let p = "  Router online — blazing fast, strict tiers";
+    plain.push(p.to_string());
+    colored.push(format!("  {}", e("Router online — blazing fast, strict tiers")));
+
+    let p = format!("  Base URL      {}", base);
+    plain.push(p.clone());
+    colored.push(format!("  {}      {}", v("Base URL"), base));
+
+    let p = "  OpenAI        POST /v1/chat/completions";
+    plain.push(p.to_string());
+    colored.push(format!("  {}        {} /v1/chat/completions", v("OpenAI"), c("POST")));
+
+    let p = "                POST /v1/responses";
+    plain.push(p.to_string());
+    colored.push(format!("                {} /v1/responses", c("POST")));
+
+    let p = "                GET  /v1/models";
+    plain.push(p.to_string());
+    colored.push(format!("                {}  /v1/models", c("GET")));
+
+    let p = "  Anthropic     POST /v1/messages";
+    plain.push(p.to_string());
+    colored.push(format!("  {}     {} /v1/messages", v("Anthropic"), c("POST")));
+
+    let p = "  Images        POST /v1/images/generations";
+    plain.push(p.to_string());
+    colored.push(format!("  {}        {} /v1/images/generations", v("Images"), c("POST")));
+
+    let p = "  Health        GET  /healthz";
+    plain.push(p.to_string());
+    colored.push(format!("  {}        {}  /healthz", v("Health"), c("GET")));
+
+    let p = "  Admin         /admin/tiers · /admin/stats";
+    plain.push(p.to_string());
+    colored.push(format!("  {}         /admin/tiers · /admin/stats", v("Admin")));
+
+    let p = "                /admin/metrics · /admin/bench";
+    plain.push(p.to_string());
+    colored.push(format!("                /admin/metrics · /admin/bench"));
+
+    let p = "  Wizard        xrouter wizard --web (:3001)";
+    plain.push(p.to_string());
+    colored.push(format!("  {}        xrouter wizard --web (:3001)", v("Wizard")));
+
+    if track || bench {
+        let mut flags = Vec::new();
+        if track { flags.push("--track → ~/.local/share/xrouter/track.bin".to_string()); }
+        if bench { flags.push("--bench".to_string()); }
+        let fstr = flags.join(" · ");
+        let p = format!("  Flags         {}", fstr);
+        plain.push(p.clone());
+        colored.push(format!("  {}         {}", v("Flags"), fstr));
+    }
+
+    let inner: usize = plain.iter().map(|s| s.chars().count()).max().unwrap_or(20);
+    let border = "─".repeat(inner + 2);
+    let top = bd(&format!("╭{}╮", border));
+    let sep = bd(&format!("├{}┤", border));
+    let bot = bd(&format!("╰{}╯", border));
+
+    println!("{}", top);
+    for i in 0..2 {
+        let pad = inner - plain[i].chars().count();
+        println!("{}  {}{} {}", bd("│"), colored[i], " ".repeat(pad), bd("│"));
+    }
+    println!("{}", sep);
+    for i in 2..plain.len() {
+        let pad = inner - plain[i].chars().count();
+        println!("{}  {}{} {}", bd("│"), colored[i], " ".repeat(pad), bd("│"));
+    }
+    println!("{}", bot);
 }
 
 async fn run_wizard() -> anyhow::Result<()> {

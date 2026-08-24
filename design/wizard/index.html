@@ -453,6 +453,31 @@ function hideModal(){document.getElementById('modalOverlay').classList.add('hidd
 document.getElementById('modalOverlay').addEventListener('click',e=>{if(e.target===e.currentTarget)hideModal()});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')hideModal()});
 
+/* ══ Promise-based dialog API (openDialog) ══ */
+function openDialog(opts){
+  return new Promise(resolve=>{
+    const type=opts.type||'alert';
+    if(type==='prompt'){
+      showModal({title:opts.title||'Notice',sub:opts.msg||'',
+        bodyHTML:'<label class="field"><span class="label">'+esc(opts.title||'Input')+'</span><input type="text" id="dialogPromptInput" placeholder="'+esc(opts.placeholder||'')+'" value="'+esc(opts.inputValue||'')+'" autocomplete="off"></label>',
+        actions:[
+          {label:opts.cancelText||'Cancel',cls:'btn-secondary',cb:()=>resolve(null)},
+          {label:opts.confirmText||'OK',cls:'btn-primary',cb:()=>{const v=document.getElementById('dialogPromptInput')?.value||'';resolve(opts.allowEmpty?v:(v.trim()||null))}}
+        ]});
+    }else if(type==='confirm'){
+      showModal({title:opts.title||'Notice',sub:opts.msg||'',bodyHTML:'',
+        actions:[
+          {label:opts.cancelText||'Cancel',cls:'btn-secondary',cb:()=>resolve(false)},
+          {label:opts.confirmText||'OK',cls:'btn-primary',cb:()=>resolve(true)}
+        ]});
+    }else{
+      showModal({title:opts.title||'Notice',sub:opts.msg||'',bodyHTML:'',
+        actions:[{label:opts.confirmText||'OK',cls:'btn-primary',cb:()=>resolve(true)}]});
+    }
+  });
+}
+function showModalLegacy(title,msg){showModal({title:title||'Notice',sub:msg||'',bodyHTML:'',actions:[{label:'OK',cls:'btn-primary',cb:()=>{}}]})}
+
 /* ══ Tabs ══ */
 function initTabs(){document.querySelectorAll('.tab-btn').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active'));
