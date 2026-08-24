@@ -1,0 +1,102 @@
+/// Self-contained HTML templates for the xrouter web wizard.
+///
+/// Each constant is a complete, standalone HTML page with inline CSS/JS.
+/// Include via `include_str!` in the binary crate or serve directly.
+///
+/// # Usage
+///
+/// ```rust
+/// // In your binary / server handler:
+/// const WIZARD_HTML: &str = include_str!("templates/wizard.html");
+/// const METRICS_HTML: &str = include_str!("templates/metrics.html");
+///
+/// // Serve as response body with Content-Type: text/html
+/// ```
+
+/// The main wizard page: provider selector, API key management with eye-toggle,
+/// ban config, model fetcher, tier editor.
+pub const WIZARD_HTML: &str = include_str!("templates/wizard.html");
+
+/// Standalone metrics dashboard: latency charts, error rates, request log table.
+pub const METRICS_HTML: &str = include_str!("templates/metrics.html");
+
+/// Size of the wizard template in bytes (sanity check < 50 KB).
+pub const WIZARD_HTML_LEN: usize = WIZARD_HTML.len();
+
+/// Size of the metrics template in bytes.
+pub const METRICS_HTML_LEN: usize = METRICS_HTML.len();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_html_not_empty() {
+        assert!(!WIZARD_HTML.is_empty());
+        assert!(WIZARD_HTML.starts_with("<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn metrics_html_not_empty() {
+        assert!(!METRICS_HTML.is_empty());
+        assert!(METRICS_HTML.starts_with("<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn wizard_size_budget() {
+        // Must stay under 50 KB for fast loading
+        assert!(
+            WIZARD_HTML_LEN < 50_000,
+            "wizard.html is {} bytes, exceeds 50 KB budget",
+            WIZARD_HTML_LEN
+        );
+    }
+
+    #[test]
+    fn metrics_size_budget() {
+        assert!(
+            METRICS_HTML_LEN < 50_000,
+            "metrics.html is {} bytes, exceeds 50 KB budget",
+            METRICS_HTML_LEN
+        );
+    }
+
+    #[test]
+    fn wizard_has_required_sections() {
+        assert!(WIZARD_HTML.contains("providerGrid"), "missing provider selector");
+        assert!(WIZARD_HTML.contains("keyList"), "missing key list");
+        assert!(WIZARD_HTML.contains("banDuration"), "missing ban config");
+        assert!(WIZARD_HTML.contains("modelList"), "missing model list");
+        assert!(WIZARD_HTML.contains("tierList"), "missing tier editor");
+        assert!(WIZARD_HTML.contains("latencyChart"), "missing latency chart");
+        assert!(WIZARD_HTML.contains("errorChart"), "missing error chart");
+    }
+
+    #[test]
+    fn eye_icon_is_inline_svg() {
+        // Eye icon should be inline SVG, not external
+        assert!(WIZARD_HTML.contains("EYE_OPEN"), "missing eye-open SVG constant");
+        assert!(WIZARD_HTML.contains("EYE_CLOSED"), "missing eye-closed SVG constant");
+        assert!(WIZARD_HTML.contains("<svg viewBox"), "eye icon must be inline SVG");
+    }
+
+    #[test]
+    fn no_external_cdn() {
+        assert!(
+            !WIZARD_HTML.contains("cdn."),
+            "must not reference external CDN"
+        );
+        assert!(
+            !WIZARD_HTML.contains("src=\"http"),
+            "must not load external scripts"
+        );
+    }
+
+    #[test]
+    fn has_toggle_mechanism() {
+        assert!(WIZARD_HTML.contains("type=\"password\"") || WIZARD_HTML.contains("masked"),
+            "must have password/masked field");
+        assert!(WIZARD_HTML.contains("type=\"text\"") || WIZARD_HTML.contains("visible"),
+            "must have text/visible toggle");
+    }
+}

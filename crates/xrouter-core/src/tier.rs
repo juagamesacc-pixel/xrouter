@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::RouterError;
+use crate::{RouterError, EndpointId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelEntry {
@@ -9,9 +9,13 @@ pub struct ModelEntry {
     pub is_default: bool,
     #[serde(default = "default_weight")]
     pub weight: u32,
+    /// Precomputed endpoint id, assigned at config load time.
+    #[serde(default = "default_endpoint_id")]
+    pub endpoint_id: EndpointId,
 }
 
 fn default_weight() -> u32 { 1 }
+fn default_endpoint_id() -> EndpointId { EndpointId::new("", "") }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tier {
@@ -72,7 +76,7 @@ mod tests {
     #[test]
     fn strict_resolution() {
         let reg = TierRegistry::new(vec![
-            Tier::new("fast", vec![ModelEntry { provider: "opencode-zen".into(), model: "big-pickle".into(), is_default: true, weight: 1 }])
+            Tier::new("fast", vec![ModelEntry { provider: "opencode-zen".into(), model: "big-pickle".into(), is_default: true, weight: 1, endpoint_id: EndpointId::new("opencode-zen", "big-pickle") }])
         ]);
         assert!(reg.resolve("fast").is_ok());
         assert!(reg.resolve("slow").is_err());
@@ -83,7 +87,7 @@ mod tests {
     fn add_replace() {
         let mut reg = TierRegistry::new(vec![]);
         reg.add_or_replace(Tier::new("a", vec![]));
-        reg.add_or_replace(Tier::new("a", vec![ModelEntry { provider: "p".into(), model: "m".into(), is_default: false, weight: 1 }]));
+        reg.add_or_replace(Tier::new("a", vec![ModelEntry { provider: "p".into(), model: "m".into(), is_default: false, weight: 1, endpoint_id: EndpointId::new("p", "m") }]));
         assert_eq!(reg.tiers().len(), 1);
         assert_eq!(reg.get("a").unwrap().entries.len(), 1);
     }

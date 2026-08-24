@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 xrouter-core = { path = "../xrouter-core" }
 xrouter-config = { path = "../xrouter-config" }
+xrouter-auth = { path = "../xrouter-auth" }
 xrouter-providers = { path = "../xrouter-providers" }
 xrouter-balancer = { path = "../xrouter-balancer" }
 xrouter-server = { path = "../xrouter-server" }
@@ -25,3 +26,6 @@ reqwest = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
+
+[features]
+bench = ["xrouter-server/bench"]

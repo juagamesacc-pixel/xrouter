@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 xrouter-core = { path = "../xrouter-core" }
 xrouter-config = { path = "../xrouter-config" }
+xrouter-auth = { path = "../xrouter-auth" }
 dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

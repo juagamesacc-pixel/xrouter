@@ -43,6 +43,23 @@ impl From<&str> for ApiKey {
     fn from(s: &str) -> Self { Self(s.to_string()) }
 }
 
+/// Stable endpoint identifier "provider:model".
+///
+/// Lives in `xrouter-core` (rather than the balancer) so that `ModelEntry`
+/// can store a precomputed id without creating a crate dependency cycle.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointId(pub String);
+
+impl EndpointId {
+    pub fn new(provider: &str, model: &str) -> Self {
+        Self(format!("{}:{}", provider, model))
+    }
+    /// Provider portion (text before the first ':').
+    pub fn provider(&self) -> &str {
+        self.0.split(':').next().unwrap_or(&self.0)
+    }
+}
+
 /// Protocol kind
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

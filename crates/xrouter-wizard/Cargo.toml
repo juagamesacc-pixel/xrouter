@@ -1,0 +1,16 @@
+[package]
+name = "xrouter-wizard"
+version = "0.1.0"
+edition = "2021"
+description = "Premium web-based setup wizard for xrouter — self-contained HTML templates"
+
+# Keep this crate OUT of the xrouter workspace so it is not linked into the
+# xrouter-server hot path. It is spawned as a separate `xrouter wizard --web`
+# process on :3001.
+[workspace]
+
+[[bin]]
+name = "xrouter-wizard-server"
+path = "src/main.rs"
+
+[dependencies]

@@ -7,6 +7,7 @@ edition = "2021"
 xrouter-core = { path = "../xrouter-core" }
 xrouter-config = { path = "../xrouter-config" }
 xrouter-providers = { path = "../xrouter-providers" }
+xrouter-auth = { path = "../xrouter-auth" }
 xrouter-balancer = { path = "../xrouter-balancer" }
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -24,3 +25,11 @@ reqwest = { workspace = true }
 tokio-stream = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+arc-swap = { workspace = true }
+bincode = "1.3"
+zstd = "0.13"
+hdrhistogram = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
+
+[features]
+bench = ["dep:hdrhistogram", "dep:sysinfo"]

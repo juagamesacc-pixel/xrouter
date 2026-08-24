@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use anyhow::{Context, Result};
-use xrouter_core::{Tier, ModelEntry};
+use xrouter_core::{Tier, ModelEntry, EndpointId};
+pub use xrouter_auth::DeviceAccountConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
@@ -21,18 +22,24 @@ impl Default for Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderConfig {
     #[serde(default = "default_kind")]
-    pub kind: String, // "openai-compat" | "anthropic"
+    pub kind: String, // "openai-compat" | "anthropic" | "kiro" | "antigravity" | "device:<name>"
     pub base_url: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub keys: Vec<String>,
+    /// Seconds a key is banned after a quota (429) error. Default 300.
+    #[serde(default = "default_quota_ban_secs")]
+    pub quota_ban_secs: u64,
+    /// Device-login account metadata (no secrets). Used when `kind` is a device
+    /// provider. Secrets live in the off-RAM device-account token store.
     #[serde(default)]
-    pub rr_cursor: usize,
+    pub accounts: Vec<DeviceAccountConfig>,
 }
 
 fn default_kind() -> String { "openai-compat".into() }
 fn default_true() -> bool { true }
+fn default_quota_ban_secs() -> u64 { 300 }
 
 impl ProviderConfig {
     pub fn protocol(&self) -> xrouter_core::Protocol {
@@ -40,6 +47,17 @@ impl ProviderConfig {
             "anthropic" => xrouter_core::Protocol::Anthropic,
             _ => xrouter_core::Protocol::OpenAiCompat,
         }
+    }
+
+    /// True when this provider authenticates via the device-login flow (no API
+    /// keys). Matches `kiro`, `antigravity`, and `device:<name>` kinds.
+    pub fn is_device(&self) -> bool {
+        xrouter_auth::is_device_kind(&self.kind)
+    }
+
+    /// Bare provider name for a device provider (`device:kiro` -> `kiro`).
+    pub fn device_provider_name(&self) -> &str {
+        xrouter_auth::normalize_provider(&self.kind)
     }
 }
 
@@ -61,22 +79,60 @@ impl Config {
             base_url: "https://opencode.ai/zen/v1".into(),
             enabled: true,
             keys: vec![],
-            rr_cursor: 0,
+            quota_ban_secs: default_quota_ban_secs(),
+            accounts: vec![],
         });
         providers.insert("openrouter".to_string(), ProviderConfig {
             kind: "openai-compat".into(),
             base_url: "https://openrouter.ai/api/v1".into(),
             enabled: true,
             keys: vec![],
-            rr_cursor: 0,
+            quota_ban_secs: default_quota_ban_secs(),
+            accounts: vec![],
         });
-        let tiers = vec![Tier {
-            name: "big-pickle".into(),
-            strict: true,
-            default_entry: 0,
-            entries: vec![ModelEntry { provider: "opencode-zen".into(), model: "big-pickle".into(), is_default: true, weight: 1 }],
-        }];
-        Self { settings: Settings { default_tier: Some("big-pickle".into()), api_token: None }, providers, tiers }
+        // Built-in free image provider (Together AI). OpenAI-compatible image
+        // endpoint lives at {base_url}/images/generations.
+        // NOTE: Together's documented host is https://api.together.xyz/v1, but
+        // the librarian confirmed https://api.together.ai/v1 works for
+        // /images/generations as well. We use the .ai host so the path suffix
+        // appends cleanly; the .xyz host is equivalent.
+        providers.insert("together-image".to_string(), ProviderConfig {
+            kind: "openai-compat".into(),
+            base_url: "https://api.together.ai/v1".into(),
+            enabled: true,
+            keys: vec![],
+            quota_ban_secs: default_quota_ban_secs(),
+            accounts: vec![],
+        });
+        let tiers = vec![
+            Tier {
+                name: "big-pickle".into(),
+                strict: true,
+                default_entry: 0,
+                entries: vec![ModelEntry { provider: "opencode-zen".into(), model: "big-pickle".into(), is_default: true, weight: 1, endpoint_id: EndpointId::new("opencode-zen", "big-pickle") }],
+            },
+            // Built-in image tier backed by the free Together AI image provider.
+            Tier {
+                name: "images".into(),
+                strict: true,
+                default_entry: 0,
+                entries: vec![ModelEntry { provider: "together-image".into(), model: "black-forest-labs/FLUX.1-schnell".into(), is_default: true, weight: 1, endpoint_id: EndpointId::new("together-image", "black-forest-labs/FLUX.1-schnell") }],
+            },
+        ];
+        let mut cfg = Self { settings: Settings { default_tier: Some("big-pickle".into()), api_token: None }, providers, tiers };
+        cfg.finalize();
+        cfg
+    }
+
+    /// Assign a stable `endpoint_id` to every `ModelEntry` from its
+    /// `(provider, model)` pair. Called once at config load so the balancer
+    /// can avoid recomputing ids on the hot path.
+    pub fn finalize(&mut self) {
+        for tier in &mut self.tiers {
+            for e in &mut tier.entries {
+                e.endpoint_id = EndpointId::new(&e.provider, &e.model);
+            }
+        }
     }
     pub fn tier_registry(&self) -> xrouter_core::tier::TierRegistry {
         xrouter_core::tier::TierRegistry::new(self.tiers.clone())
@@ -103,7 +159,8 @@ pub fn load_from(path: &Path) -> Result<Config> {
         return Ok(Config::default_with_builtins());
     }
     let s = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let cfg: Config = toml::from_str(&s).context("parse config toml")?;
+    let mut cfg: Config = toml::from_str(&s).context("parse config toml")?;
+    cfg.finalize();
     Ok(cfg)
 }
 

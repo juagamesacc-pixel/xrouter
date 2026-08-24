@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 xrouter-core = { path = "../xrouter-core" }
+xrouter-auth = { path = "../xrouter-auth" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
@@ -13,3 +14,4 @@ thiserror = { workspace = true }
 notify = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+arc-swap = { workspace = true }

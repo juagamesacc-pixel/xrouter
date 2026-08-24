@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>xrouter metrics</title>
+<style>
+:root{
+  --bg:#09090b;--bg2:#111114;--bg3:#1a1a1f;--bg4:#23232a;
+  --surface:#18181c;--border:#2a2a32;--border2:#3a3a44;
+  --fg:#e4e4e7;--fg2:#a1a1aa;--fg3:#71717a;
+  --accent:#6366f1;--accent2:#818cf8;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;
+  --radius:12px;--radius-sm:8px;--radius-xs:6px;
+  --font:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:"SF Mono","Cascadia Code","Fira Code",Consolas,monospace;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);color:var(--fg);background:var(--bg);min-height:100vh;line-height:1.6;
+  background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(99,102,241,.1),transparent)}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.container{max-width:960px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:1.6rem;font-weight:700;letter-spacing:-.03em;
+  background:linear-gradient(135deg,var(--fg),var(--accent2));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px}
+.sub{color:var(--fg3);font-size:.85rem;margin-bottom:28px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:18px;text-align:center;
+  animation:fadeUp .4s ease both}
+.card .val{font-size:1.9rem;font-weight:700;letter-spacing:-.02em;margin:4px 0}
+.card .lbl{font-size:.75rem;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em}
+.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:20px;
+  animation:fadeUp .4s ease .1s both}
+.chart-box canvas{width:100%!important;height:280px!important}
+.chart-title{font-size:.88rem;font-weight:600;margin-bottom:14px}
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:20px;
+  animation:fadeUp .4s ease .2s both}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{text-align:left;padding:10px 14px;color:var(--fg3);font-weight:500;border-bottom:2px solid var(--border);
+  font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+td{padding:9px 14px;border-bottom:1px solid var(--border)}
+tr:hover td{background:rgba(99,102,241,.03)}
+.ok{color:var(--green);font-weight:600}.err{color:var(--red);font-weight:600}
+.empty{text-align:center;padding:60px 20px;color:var(--fg3)}
+.empty svg{width:56px;height:56px;stroke:var(--bg4);margin-bottom:16px}
+.refresh{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;font-size:.82rem;font-weight:600;
+  font-family:var(--font);background:var(--bg4);color:var(--fg2);border:1.5px solid var(--border);
+  border-radius:var(--radius-xs);cursor:pointer;transition:all .2s}
+.refresh:hover{background:var(--bg3);border-color:var(--border2);color:var(--fg)}
+@media(max-width:640px){.grid{grid-template-columns:1fr 1fr}.container{padding:24px 16px}}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>xrouter metrics</h1>
+  <p class="sub">Live performance dashboard — auto-refreshes every 5s</p>
+  <div class="grid" id="cards"></div>
+  <div class="chart-box"><div class="chart-title">Latency (ms) over time</div><canvas id="cLatency"></canvas></div>
+  <div class="chart-box"><div class="chart-title">Error rate over time</div><canvas id="cError"></canvas></div>
+  <div class="chart-box"><div class="chart-title">Requests per second</div><canvas id="cRps"></canvas></div>
+  <div class="table-wrap">
+    <table><thead><tr><th>Time</th><th>Tier</th><th>Provider</th><th>Model</th><th>Status</th><th>Latency</th><th>Key</th><th>Error</th></tr></thead>
+    <tbody id="tbody"></tbody></table>
+  </div>
+  <div style="text-align:center;margin-top:16px"><button class="refresh" id="refreshBtn">↻ Refresh now</button></div>
+</div>
+
+<script>
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function drawChart(id,pts,label,stroke,fill){
+  const c=document.getElementById(id);if(!c)return;
+  const ctx=c.getContext('2d'),dpr=devicePixelRatio||1,r=c.parentElement.getBoundingClientRect();
+  c.width=r.width*dpr;c.height=280*dpr;c.style.width=r.width+'px';c.style.height='280px';ctx.scale(dpr,dpr);
+  const W=r.width,H=280,p={t:20,r:20,b:30,l:55},cW=W-p.l-p.r,cH=H-p.t-p.b;
+  ctx.clearRect(0,0,W,H);
+  if(!pts.length){ctx.fillStyle='#71717a';ctx.font='13px system-ui';ctx.textAlign='center';ctx.fillText('Awaiting data…',W/2,H/2);return}
+  const vals=pts.map(p=>typeof p==='number'?p:(p.v||p.y||0)),mx=Math.max(...vals)*1.15||1,n=vals.length;
+  ctx.strokeStyle='#2a2a32';ctx.lineWidth=1;
+  for(let i=0;i<=5;i++){const y=p.t+(cH/5)*i;ctx.beginPath();ctx.moveTo(p.l,y);ctx.lineTo(W-p.r,y);ctx.stroke();
+    ctx.fillStyle='#71717a';ctx.font='10px system-ui';ctx.textAlign='right';ctx.fillText((mx-(mx/5)*i).toFixed(0),p.l-8,y+3)}
+  ctx.beginPath();ctx.moveTo(p.l,p.t+cH);
+  vals.forEach((v,i)=>{const x=p.l+(n>1?(cW/(n-1))*i:cW/2),y=p.t+cH-(v/mx)*cH;ctx.lineTo(x,y)});
+  ctx.lineTo(p.l+cW,p.t+cH);ctx.closePath();
+  const g=ctx.createLinearGradient(0,p.t,0,p.t+cH);g.addColorStop(0,fill);g.addColorStop(1,'transparent');ctx.fillStyle=g;ctx.fill();
+  ctx.beginPath();vals.forEach((v,i)=>{const x=p.l+(n>1?(cW/(n-1))*i:cW/2),y=p.t+cH-(v/mx)*cH;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});
+  ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.lineJoin='round';ctx.stroke();
+  const lx=p.l+(n>1?cW:cW/2),ly=p.t+cH-(vals[n-1]/mx)*cH;
+  ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);ctx.fillStyle=stroke;ctx.fill();
+  ctx.beginPath();ctx.arc(lx,ly,8,0,Math.PI*2);ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.globalAlpha=.25;ctx.stroke();ctx.globalAlpha=1;
+  if(n>1){ctx.fillStyle='#71717a';ctx.font='10px system-ui';ctx.textAlign='center';const step=Math.max(1,Math.floor(n/7));
+    for(let i=0;i<n;i+=step){const x=p.l+(cW/(n-1))*i;ctx.fillText(String(pts[i]?.t||pts[i]?.time||i).slice(-6),x,H-8)}}
+}
+async function load(){
+  try{
+    const r=await fetch('/admin/metrics');if(!r.ok)return;const d=await r.json();
+    const cards=document.getElementById('cards');
+    cards.innerHTML=[
+      {l:'Total Requests',v:d.total||0,c:'var(--accent2)'},
+      {l:'Avg Latency',v:d.avg_latency_ms?d.avg_latency_ms.toFixed(0)+'ms':'—',c:'var(--green)'},
+      {l:'P99 Latency',v:d.p99_latency_ms?d.p99_latency_ms.toFixed(0)+'ms':'—',c:'var(--amber)'},
+      {l:'Error Rate',v:d.total?((d.error_count||0)/d.total*100).toFixed(1)+'%':'—',c:(d.error_count||0)>0?'var(--red)':'var(--green)'},
+      {l:'RPS',v:d.rps?d.rps.toFixed(1):'—',c:'var(--accent2)'},
+    ].map(s=>`<div class="card"><div class="lbl">${s.l}</div><div class="val" style="color:${s.c}">${s.v}</div></div>`).join('');
+    drawChart('cLatency',d.latency||[],'Latency','var(--accent2)','rgba(99,102,241,.15)');
+    drawChart('cError',d.error_timeline||[],'Errors','var(--red)','rgba(239,68,68,.12)');
+    drawChart('cRps',d.rps_timeline||[],'RPS','var(--green)','rgba(34,197,94,.12)');
+    const tb=document.getElementById('tbody');tb.innerHTML='';
+    (d.recent||[]).slice(0,100).forEach(e=>{
+      tb.innerHTML+=`<tr><td style="font-family:var(--mono);font-size:.78rem;white-space:nowrap">${esc(e.time||'')}</td>
+        <td>${esc(e.tier||'')}</td><td>${esc(e.provider||'')}</td><td style="font-family:var(--mono);font-size:.8rem">${esc(e.model||'')}</td>
+        <td class="${e.status>=400?'err':'ok'}">${e.status||'—'}</td>
+        <td style="font-family:var(--mono)">${e.latency_ms?e.latency_ms.toFixed(0)+'ms':'—'}</td>
+        <td style="font-size:.78rem;color:var(--fg3)">${e.key_idx!=null?'#'+e.key_idx:'—'}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg3)">${esc(e.error||'')}</td></tr>`;
+    });
+  }catch{}
+}
+document.getElementById('refreshBtn').addEventListener('click',load);
+load();setInterval(load,5000);
+</script>
+</body>
+</html>

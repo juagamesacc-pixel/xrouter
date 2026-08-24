@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use notify::{Watcher, RecursiveMode, Event, EventKind};
 use tracing::{info, warn};
@@ -21,11 +21,11 @@ impl ConfigWatcher {
 }
 
 /// Spawn a file watcher that reloads config on change.
-/// `config` is shared RwLock that will be updated in-place.
+/// `config` is a shared `ArcSwap<Config>` that will be atomically replaced.
 /// Debounces 200ms to avoid duplicate events from atomic rename.
 pub fn watch_config_file(
     path: std::path::PathBuf,
-    shared: Arc<RwLock<Config>>,
+    shared: Arc<arc_swap::ArcSwap<Config>>,
     balancer_update: impl Fn(&Config) + Send + Sync + 'static,
 ) -> anyhow::Result<ConfigWatcher> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Event>(32);
@@ -75,7 +75,7 @@ pub fn watch_config_file(
                     match load_from(&watcher_path) {
                         Ok(cfg) => {
                             balancer_update(&cfg);
-                            *shared.write().unwrap() = cfg;
+                            shared.store(Arc::new(cfg));
                             info!("config hot-reloaded from {}", watcher_path.display());
                         }
                         Err(e) => {

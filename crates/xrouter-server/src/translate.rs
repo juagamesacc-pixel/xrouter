@@ -1,19 +1,5 @@
+use std::collections::HashMap;
 use serde_json::{Value, json};
-
-/// Extract model string via fast peek (serde_json value)
-pub fn peek_model(body: &[u8]) -> Option<String> {
-    // minimal parse: look for "model" field
-    if let Ok(v) = serde_json::from_slice::<Value>(body) {
-        if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
-            return Some(m.to_string());
-        }
-    }
-    None
-}
-
-pub fn is_streaming(body: &Value) -> bool {
-    body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false)
-}
 
 /// Translate OpenAI request body to Anthropic format
 pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
@@ -52,6 +38,19 @@ pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
                             parts.push(json!({"type":"text","text": t}));
                         } else if let Some(s) = p.as_str() {
                             parts.push(json!({"type":"text","text": s}));
+                        } else if p.get("type").and_then(|x| x.as_str()) == Some("image_url") {
+                            // OpenAI image_url -> Anthropic image source.
+                            if let Some(url) = p.get("image_url").and_then(|u| u.get("url")).and_then(|u| u.as_str()) {
+                                if let Some(anth) = openai_image_url_to_anthropic(url) {
+                                    parts.push(anth);
+                                } else {
+                                    // Unsupported/unknown url scheme: keep as-is
+                                    // so the part is not silently dropped.
+                                    parts.push(p.clone());
+                                }
+                            } else {
+                                parts.push(p.clone());
+                            }
                         } else {
                             parts.push(p.clone());
                         }
@@ -116,6 +115,15 @@ pub fn anthropic_to_openai(body: &Value, target_model: &str) -> Value {
                     for block in arr {
                         if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
                             parts.push(json!({"type":"text","text": t}));
+                        } else if block.get("type").and_then(|x| x.as_str()) == Some("image") {
+                            // Anthropic image -> OpenAI image_url.
+                            if let Some(url) = anthropic_image_to_openai_url(block) {
+                                parts.push(json!({"type":"image_url","image_url":{"url": url}}));
+                            } else {
+                                // Could not translate (e.g. missing source): keep
+                                // the original block so nothing is dropped.
+                                parts.push(block.clone());
+                            }
                         } else {
                             parts.push(block.clone());
                         }
@@ -141,76 +149,272 @@ pub fn anthropic_to_openai(body: &Value, target_model: &str) -> Value {
     out
 }
 
-/// Translate SSE chunk OpenAI -> Anthropic style (simplified)
-///
-/// For streaming translation, we operate chunk-wise.
-/// Input is an OpenAI chunk line like `data: {...}` or `data: [DONE]`
-/// Output is Anthropic event lines.
-/// This is a minimal implementation: synthesize message_start, content_block_delta, message_stop.
-pub fn translate_sse_openai_to_anthropic_chunk(openai_data: &str) -> Vec<String> {
-    // openai_data is JSON string from delta
-    if openai_data.trim() == "[DONE]" { return vec!["event: message_stop\ndata: {\"type\":\"message_stop\"}".to_string()]; }
-    let v: Result<Value, _> = serde_json::from_str(openai_data);
-    if let Ok(val) = v {
-        if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
-            if let Some(choice) = choices.first() {
-                if let Some(delta) = choice.get("delta") {
-                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                        let anth = json!({
-                            "type": "content_block_delta",
-                            "index": 0,
-                            "delta": { "type": "text_delta", "text": content }
-                        });
-                        return vec![format!("event: content_block_delta\ndata: {}", anth)];
-                    }
-                    // tool call delta etc omitted for brevity
-                }
-                if let Some(finish) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                    if finish != "null" {
-                        return vec!["event: message_stop\ndata: {\"type\":\"message_stop\"}".to_string()];
-                    }
-                }
-            }
-        }
+/// Convert an OpenAI `image_url` value (a URL string) into an Anthropic image
+/// content block. Supports both inline `data:image/<mime>;base64,<data>` URLs
+/// and remote `http(s)://` URLs (Anthropic source type `url`).
+fn openai_image_url_to_anthropic(url: &str) -> Option<Value> {
+    if let Some(rest) = url.strip_prefix("data:") {
+        // format: image/png;base64,xxxx  (or image/png;name=..;base64,xxxx)
+        let (meta, data) = rest.split_once(',')?;
+        let media_type = meta.split(';').next()?.to_string();
+        let b64 = if let Some(b) = data.strip_prefix("base64,") { b } else { data };
+        Some(json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": b64 }
+        }))
+    } else if url.starts_with("http://") || url.starts_with("https://") {
+        Some(json!({
+            "type": "image",
+            "source": { "type": "url", "url": url }
+        }))
+    } else {
+        None
     }
-    vec![]
 }
 
-pub fn translate_sse_anthropic_to_openai_chunk(anth_event: &str, anth_data: &str) -> Option<String> {
-    if anth_event == "content_block_delta" {
-        if let Ok(v) = serde_json::from_str::<Value>(anth_data) {
-            if let Some(delta) = v.get("delta").and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
-                let openai = json!({
-                    "id": "chatcmpl-translated",
-                    "object": "chat.completion.chunk",
-                    "choices": [{ "index": 0, "delta": { "content": delta }, "finish_reason": null }]
+/// Extract an OpenAI-compatible `image_url` string from an Anthropic image
+/// content block. Inline base64 sources are re-encoded as a `data:` URL; remote
+/// `url` sources are passed through directly.
+fn anthropic_image_to_openai_url(block: &Value) -> Option<String> {
+    let source = block.get("source")?;
+    let source_type = source.get("type").and_then(|t| t.as_str())?;
+    match source_type {
+        "base64" => {
+            let media_type = source.get("media_type").and_then(|m| m.as_str()).unwrap_or("image/png");
+            let data = source.get("data").and_then(|d| d.as_str())?;
+            Some(format!("data:{};base64,{}", media_type, data))
+        }
+        "url" => {
+            let url = source.get("url").and_then(|u| u.as_str())?;
+            Some(url.to_string())
+        }
+        _ => None,
+    }
+}
+
+pub fn is_streaming(body: &Value) -> bool {
+    body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Stateful SSE streaming translators
+//
+// Cross-protocol streaming must not lose data (especially tool calls). The
+// OpenAI and Anthropic SSE dialects split a single logical event across many
+// chunks, so translation carries per-stream state between chunks.
+// ---------------------------------------------------------------------------
+
+/// State for OpenAI -> Anthropic streaming translation.
+#[derive(Default, Clone)]
+pub struct OaToAnthStreamState {
+    pub message_started: bool,
+    pub tool_blocks: HashMap<usize, ToolBlock>,
+    pub next_block_index: usize,
+    pub finished: bool,
+}
+
+#[derive(Clone)]
+pub struct ToolBlock {
+    pub block_index: usize,
+    pub id: String,
+    pub name: String,
+    pub started: bool,
+}
+
+/// State for Anthropic -> OpenAI streaming translation.
+#[derive(Default, Clone)]
+pub struct AnthToOaStreamState {
+    /// anthropic block_index -> (openai tool index, id, name)
+    pub tool_blocks: HashMap<usize, (usize, String, String)>,
+    pub next_tool_index: usize,
+    pub finished: bool,
+}
+
+/// Translate one OpenAI SSE `data:` payload into zero or more Anthropic events.
+pub fn translate_sse_openai_to_anthropic_chunk_st(state: &mut OaToAnthStreamState, openai_data: &str) -> Vec<String> {
+    if openai_data.trim() == "[DONE]" {
+        let mut out = Vec::new();
+        if !state.finished {
+            for (_, tb) in state.tool_blocks.iter() {
+                if tb.started {
+                    out.push(format!("event: content_block_stop\ndata: {}", json!({"type":"content_block_stop","index": tb.block_index})));
+                }
+            }
+            out.push("event: message_stop\ndata: {\"type\":\"message_stop\"}".to_string());
+            state.finished = true;
+        }
+        return out;
+    }
+    let val: Value = match serde_json::from_str(openai_data) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let mut out = Vec::new();
+    let choice = val.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first());
+    let choice = match choice { Some(c) => c, None => return out };
+    let delta = choice.get("delta");
+
+    // message_start on first role
+    if !state.message_started {
+        if let Some(role) = delta.and_then(|d| d.get("role")).and_then(|r| r.as_str()) {
+            let msg = json!({
+                "type": "message_start",
+                "message": {
+                    "id": val.get("id").and_then(|x| x.as_str()).unwrap_or(""),
+                    "role": role,
+                    "model": val.get("model").and_then(|m| m.as_str()).unwrap_or(""),
+                    "content": [],
+                }
+            });
+            out.push(format!("event: message_start\ndata: {}", msg));
+            state.message_started = true;
+        }
+    }
+
+    // text content
+    if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
+        if !content.is_empty() {
+            let anth = json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text": content}});
+            out.push(format!("event: content_block_delta\ndata: {}", anth));
+        }
+    }
+
+    // tool calls (may be streamed across many chunks)
+    if let Some(tool_calls) = delta.and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()) {
+        for tc in tool_calls {
+            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+            let tb = state.tool_blocks.entry(idx).or_insert_with(|| {
+                let bi = state.next_block_index;
+                state.next_block_index += 1;
+                ToolBlock { block_index: bi, id: String::new(), name: String::new(), started: false }
+            });
+            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) { if !id.is_empty() { tb.id = id.to_string(); } }
+            if let Some(name) = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) { if !name.is_empty() { tb.name = name.to_string(); } }
+            if !tb.started {
+                let block = json!({
+                    "type": "content_block_start",
+                    "index": tb.block_index,
+                    "content_block": { "type": "tool_use", "id": tb.id, "name": tb.name }
                 });
-                return Some(format!("data: {}\n", openai));
+                out.push(format!("event: content_block_start\ndata: {}", block));
+                tb.started = true;
+            }
+            if let Some(args) = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()) {
+                if !args.is_empty() {
+                    let d = json!({"type":"content_block_delta","index": tb.block_index,"delta":{"type":"input_json_delta","partial_json": args}});
+                    out.push(format!("event: content_block_delta\ndata: {}", d));
+                }
             }
         }
-    } else if anth_event == "message_stop" {
-        return Some("data: [DONE]\n".to_string());
-    } else if anth_event == "message_start" {
-        // synthesize initial chunk
-        let openai = json!({
-            "id": "chatcmpl-translated",
-            "object": "chat.completion.chunk",
-            "choices": [{ "index": 0, "delta": {"role":"assistant","content":""}, "finish_reason": null }]
-        });
-        return Some(format!("data: {}\n", openai));
     }
-    None
+
+    // finish_reason -> close blocks, emit message_delta + message_stop
+    if let Some(finish) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+        if !finish.is_empty() && finish != "null" {
+            for (_, tb) in state.tool_blocks.iter() {
+                if tb.started {
+                    out.push(format!("event: content_block_stop\ndata: {}", json!({"type":"content_block_stop","index": tb.block_index})));
+                }
+            }
+            let stop_reason = match finish {
+                "tool_calls" => "tool_use",
+                "length" => "max_tokens",
+                _ => "end_turn",
+            };
+            let msg_delta = json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": stop_reason, "stop_sequence": null },
+                "usage": val.get("usage").cloned().unwrap_or(json!({}))
+            });
+            out.push(format!("event: message_delta\ndata: {}", msg_delta));
+            out.push("event: message_stop\ndata: {\"type\":\"message_stop\"}".to_string());
+            state.finished = true;
+        }
+    }
+    out
+}
+
+/// Translate one Anthropic SSE `data:` payload (with its preceding `event:`)
+/// into an OpenAI chunk line (or `None`).
+pub fn translate_sse_anthropic_to_openai_chunk_st(state: &mut AnthToOaStreamState, event: &str, data: &str) -> Option<String> {
+    match event {
+        "message_start" => {
+            let v: Value = serde_json::from_str(data).ok()?;
+            let role = v.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()).unwrap_or("assistant");
+            let id = v.get("message").and_then(|m| m.get("id")).and_then(|x| x.as_str()).unwrap_or("chatcmpl-translated");
+            let model = v.get("message").and_then(|m| m.get("model")).and_then(|x| x.as_str()).unwrap_or("");
+            let openai = json!({
+                "id": id, "object": "chat.completion.chunk", "model": model,
+                "choices": [{ "index": 0, "delta": { "role": role }, "finish_reason": null }]
+            });
+            Some(format!("data: {}\n", openai))
+        }
+        "content_block_start" => {
+            let v: Value = serde_json::from_str(data).ok()?;
+            let block = v.get("content_block");
+            let block_index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+            let block_type = block.and_then(|b| b.get("type")).and_then(|t| t.as_str()).unwrap_or("");
+            if block_type == "tool_use" {
+                let id = block.and_then(|b| b.get("id")).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let name = block.and_then(|b| b.get("name")).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let oa_index = state.next_tool_index;
+                state.next_tool_index += 1;
+                state.tool_blocks.insert(block_index, (oa_index, id.clone(), name.clone()));
+                let openai = json!({
+                    "id": "chatcmpl-translated", "object": "chat.completion.chunk",
+                    "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": oa_index, "id": id, "type": "function", "function": { "name": name, "arguments": "" } }] }, "finish_reason": null }]
+                });
+                Some(format!("data: {}\n", openai))
+            } else { None }
+        }
+        "content_block_delta" => {
+            let v: Value = serde_json::from_str(data).ok()?;
+            let block_index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+            let delta = v.get("delta");
+            if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
+                let openai = json!({
+                    "id": "chatcmpl-translated", "object": "chat.completion.chunk",
+                    "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": null }]
+                });
+                Some(format!("data: {}\n", openai))
+            } else if let Some(partial) = delta.and_then(|d| d.get("partial_json")).and_then(|p| p.as_str()) {
+                let oa_index = state.tool_blocks.get(&block_index).map(|(i, _, _)| *i)?;
+                let openai = json!({
+                    "id": "chatcmpl-translated", "object": "chat.completion.chunk",
+                    "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": oa_index, "function": { "arguments": partial } }] }, "finish_reason": null }]
+                });
+                Some(format!("data: {}\n", openai))
+            } else { None }
+        }
+        "message_delta" => {
+            let v: Value = serde_json::from_str(data).ok()?;
+            let stop = v.get("delta").and_then(|d| d.get("stop_reason")).and_then(|s| s.as_str()).unwrap_or("stop");
+            let finish_reason = match stop {
+                "tool_use" => "tool_calls",
+                "max_tokens" => "length",
+                _ => "stop",
+            };
+            let usage = v.get("usage").cloned().unwrap_or(json!({}));
+            let openai = json!({
+                "id": "chatcmpl-translated", "object": "chat.completion.chunk",
+                "choices": [{ "index": 0, "delta": {}, "finish_reason": finish_reason }],
+                "usage": usage
+            });
+            Some(format!("data: {}\n", openai))
+        }
+        "message_stop" => {
+            if !state.finished {
+                state.finished = true;
+                Some("data: [DONE]\n".to_string())
+            } else { None }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn peek_model_extract() {
-        let body = br#"{"model":"big-pickle","messages":[]}"#;
-        assert_eq!(peek_model(body).unwrap(), "big-pickle");
-        assert!(peek_model(br#"{"messages":[]}"#).is_none());
-    }
     #[test]
     fn openai_to_anthropic_basic() {
         let body = json!({"model":"big-pickle","messages":[{"role":"system","content":"you are helpful"},{"role":"user","content":"hi"}],"max_tokens":100});
@@ -227,5 +431,17 @@ mod tests {
         assert_eq!(out["model"], "target");
         assert_eq!(out["messages"][0]["role"], "system");
         assert_eq!(out["messages"][1]["role"], "user");
+    }
+    #[test]
+    fn oa_tool_call_stream_translates() {
+        let mut st = OaToAnthStreamState::default();
+        let c1 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"id":"x","model":"m","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#);
+        assert!(c1.iter().any(|l| l.contains("message_start")));
+        let c2 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}"#);
+        assert!(c2.iter().any(|l| l.contains("content_block_start") && l.contains("tool_use")));
+        let c3 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1}"}}]},"finish_reason":null}]}"#);
+        assert!(c3.iter().any(|l| l.contains("input_json_delta")));
+        let c4 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
+        assert!(c4.iter().any(|l| l.contains("message_stop")));
     }
 }
