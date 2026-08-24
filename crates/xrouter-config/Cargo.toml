@@ -1,0 +1,15 @@
+[package]
+name = "xrouter-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+xrouter-core = { path = "../xrouter-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+notify = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

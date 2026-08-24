@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/xrouter-core",
+    "crates/xrouter-config",
+    "crates/xrouter-providers",
+    "crates/xrouter-balancer",
+    "crates/xrouter-server",
+    "crates/xrouter-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.47.1", features = ["full"] }
+axum = { version = "0.7.9", features = ["json"] }
+hyper = { version = "1.7.0" }
+hyper-util = { version = "0.1.12", features = ["full"] }
+tower = { version = "0.5.2" }
+tower-http = { version = "0.6.6", features = ["trace", "cors"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "stream", "rustls-tls-webpki-roots"] }
+serde = { version = "1.0.225", features = ["derive"] }
+serde_json = { version = "1.0.145" }
+toml = { version = "0.8.23" }
+dashmap = { version = "6.1.0" }
+dialoguer = { version = "0.11.0" }
+clap = { version = "4.5.48", features = ["derive"] }
+tracing = { version = "0.1.41" }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json", "fmt"] }
+anyhow = { version = "1.0.100" }
+thiserror = { version = "2.0.16" }
+bytes = { version = "1.10.1" }
+futures = { version = "0.3.31" }
+async-trait = { version = "0.1.89" }
+notify = { version = "6.1.1" }
+wiremock = { version = "0.6.5" }
+tokio-stream = { version = "0.1.17" }

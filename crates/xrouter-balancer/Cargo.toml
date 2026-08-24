@@ -1,0 +1,11 @@
+[package]
+name = "xrouter-balancer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+xrouter-core = { path = "../xrouter-core" }
+dashmap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }

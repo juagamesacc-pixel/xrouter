@@ -1,0 +1,27 @@
+[package]
+name = "xrouter-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "xrouter"
+path = "src/main.rs"
+
+[dependencies]
+xrouter-core = { path = "../xrouter-core" }
+xrouter-config = { path = "../xrouter-config" }
+xrouter-providers = { path = "../xrouter-providers" }
+xrouter-balancer = { path = "../xrouter-balancer" }
+xrouter-server = { path = "../xrouter-server" }
+tokio = { workspace = true }
+clap = { workspace = true }
+dialoguer = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "xrouter-providers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+xrouter-core = { path = "../xrouter-core" }
+xrouter-config = { path = "../xrouter-config" }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }

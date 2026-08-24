@@ -1,0 +1,47 @@
+[settings]
+default_tier = "big-pickle"
+
+[providers.opencode-zen]
+kind = "openai-compat"
+base_url = "https://opencode.ai/zen/v1"
+enabled = true
+keys = ["sk-test-1", "sk-test-2"]
+rr_cursor = 0
+
+[providers.openrouter]
+kind = "openai-compat"
+base_url = "https://openrouter.ai/api/v1"
+enabled = true
+keys = ["sk-or-test-..."]
+
+[providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+enabled = true
+keys = ["sk-ant-..."]
+
+[[tiers]]
+name = "big-pickle"
+strict = true
+default_entry = 0
+entries = [
+  { provider = "opencode-zen", model = "big-pickle", is_default = true, weight = 1 },
+]
+
+[[tiers]]
+name = "free-auto"
+strict = true
+default_entry = 0
+entries = [
+  { provider = "opencode-zen", model = "mimo-v2.5-free", weight = 1 },
+  { provider = "openrouter", model = "deepseek/deepseek-r1:free", weight = 1 },
+]
+
+[[tiers]]
+name = "smart"
+strict = true
+default_entry = 0
+entries = [
+  { provider = "opencode-zen", model = "big-pickle", weight = 3 },
+  { provider = "openrouter", model = "anthropic/claude-sonnet-4", weight = 1 },
+]
