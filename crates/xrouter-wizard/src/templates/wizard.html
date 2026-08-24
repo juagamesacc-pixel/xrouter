@@ -20,18 +20,18 @@
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{font-size:15px;-webkit-font-smoothing:antialiased}
-body{font-family:var(--font);color:var(--fg);background:var(--bg);min-height:100vh;line-height:1.6;
+body{font-family:var(--font);color:var(--fg);background:var(--bg);height:100dvh;overflow:hidden;line-height:1.6;
   background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(99,102,241,.12),transparent),
   radial-gradient(ellipse 60% 40% at 80% 100%,rgba(34,197,94,.06),transparent)}
 @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes dotBounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
-.container{max-width:860px;margin:0 auto;padding:40px 24px 80px}
-header{text-align:center;margin-bottom:48px;animation:fadeUp .6s var(--ease) both}
+.container{max-width:860px;margin:0 auto;padding:24px 24px 0;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+header{text-align:center;margin-bottom:24px;flex-shrink:0;animation:fadeUp .6s var(--ease) both}
 header h1{font-size:2rem;font-weight:700;letter-spacing:-.03em;
   background:linear-gradient(135deg,var(--fg),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px}
 header p{color:var(--fg3);font-size:.9rem}
-.steps{display:flex;gap:4px;margin-bottom:36px;animation:fadeUp .6s var(--ease) .1s both}
+.steps{display:flex;gap:4px;margin-bottom:16px;flex-shrink:0;animation:fadeUp .6s var(--ease) .1s both}
 .steps .dot{height:4px;flex:1;border-radius:4px;background:var(--bg4);transition:background .4s var(--ease)}
 .steps .dot.active{background:var(--accent)}.steps .dot.done{background:var(--green)}
 .section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;margin-bottom:20px;animation:fadeUp .5s var(--ease) both;transition:border-color .25s,box-shadow .25s;max-width:100%;overflow:hidden}
@@ -88,8 +88,12 @@ input::placeholder{color:var(--fg3)}
 .model-toolbar{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
 .model-toolbar input[type="text"]{flex:1;min-width:200px}
 .model-toolbar .count{font-size:.8rem;color:var(--fg3);white-space:nowrap}
-.model-list{max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg3);scrollbar-width:thin;scrollbar-color:var(--bg4) transparent}
+.model-list{max-height:55vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg3);scrollbar-width:thin;scrollbar-color:var(--bg4) transparent}
 .model-list::-webkit-scrollbar{width:6px}.model-list::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+.builtin-scroll{max-height:55vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg3);padding:14px;scrollbar-width:thin;scrollbar-color:var(--bg4) transparent}
+.builtin-scroll::-webkit-scrollbar{width:6px}.builtin-scroll::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+.sub-panel{display:none}.sub-panel.active{display:block}
+.model-hint{text-align:center;padding:28px 16px;color:var(--fg3);font-size:.86rem}
 .model-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);transition:background .15s;font-size:.88rem}
 .model-item:last-child{border-bottom:none}.model-item:hover{background:rgba(99,102,241,.04)}
 .model-item input[type="checkbox"]{width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;cursor:pointer}
@@ -125,16 +129,16 @@ input::placeholder{color:var(--fg3)}
 .error-table td{padding:9px 12px;border-bottom:1px solid var(--border)}
 .error-table tr:hover td{background:rgba(99,102,241,.03)}
 .error-table .status-err{color:var(--red);font-weight:600}.error-table .status-ok{color:var(--green);font-weight:600}
-.tab-bar{display:flex;gap:2px;margin-bottom:20px;background:var(--bg3);padding:3px;border-radius:var(--radius-sm)}
+.tab-bar{display:flex;gap:2px;margin-bottom:14px;flex-shrink:0;background:var(--bg3);padding:3px;border-radius:var(--radius-sm)}
 .tab-btn{flex:1;padding:9px 16px;font-size:.82rem;font-weight:600;font-family:var(--font);background:transparent;border:none;color:var(--fg3);cursor:pointer;border-radius:var(--radius-xs);transition:all .2s var(--ease)}
 .tab-btn:hover{color:var(--fg2)}.tab-btn.active{background:var(--bg);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.3)}
-.tab-panel{display:none;animation:fadeIn .3s var(--ease)}.tab-panel.active{display:block}
+.tab-panel{display:none;animation:fadeIn .3s var(--ease);flex:1;min-height:0;overflow-y:auto;padding-bottom:24px}.tab-panel.active{display:block}
 .toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;background:var(--bg2);border:1px solid var(--green);border-radius:var(--radius-sm);color:var(--green);font-size:.85rem;font-weight:500;box-shadow:var(--shadow-lg);z-index:1000;animation:fadeUp .3s var(--ease-b) both;display:none}
 .toast.error{border-color:var(--red);color:var(--red)}.toast.show{display:flex;align-items:center;gap:8px}
 .empty-state{text-align:center;padding:40px 20px;color:var(--fg3)}
 .empty-state svg{width:48px;height:48px;stroke:var(--bg4);margin-bottom:12px}
 .empty-state p{font-size:.88rem}
-@media(max-width:640px){.container{padding:24px 16px 60px}.provider-grid{grid-template-columns:1fr 1fr}.ban-row{flex-wrap:wrap}.model-toolbar{flex-direction:column}.tier-entry{flex-wrap:wrap}.metrics-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.container{padding:20px 16px 0}.provider-grid{grid-template-columns:1fr 1fr}.ban-row{flex-wrap:wrap}.model-toolbar{flex-direction:column}.tier-entry{flex-wrap:wrap}.metrics-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:400px){.provider-grid{grid-template-columns:1fr}}
 @media(max-width:480px){.tier-header{gap:6px}.tier-header .add-entry-btn{margin-left:0!important}.tier-header .tier-name{min-width:50px}.tier-header .tier-count{font-size:.68rem;padding:2px 6px}}
 .modal-overlay{position:fixed;inset:0;background:rgba(5,5,8,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:2000;animation:fadeIn .2s var(--ease) both;padding:24px}
@@ -212,10 +216,6 @@ input::placeholder{color:var(--fg3)}
         <label class="field" style="min-width:150px;margin:0"><span class="label">Provider</span>
           <select id="deviceProvider"><option value="kiro">kiro</option><option value="antigravity">antigravity</option></select>
         </label>
-        <label class="field" style="flex:1;min-width:170px;margin:0"><span class="label">Account ID</span>
-          <input type="text" id="deviceAccount" placeholder="email or account id"></label>
-        <label class="field" style="flex:1;min-width:170px;margin:0"><span class="label">Display name (optional)</span>
-          <input type="text" id="deviceName" placeholder="Friendly name"></label>
         <button class="btn btn-primary" id="deviceLoginBtn">Login</button>
       </div>
       <div id="deviceStatus" style="margin-top:12px;font-size:.85rem;color:var(--fg2)"></div>
@@ -236,25 +236,34 @@ input::placeholder{color:var(--fg3)}
           Fetch models
         </button>
       </div>
-      <div id="modelArea" style="display:none">
-        <div class="model-toolbar">
-          <div class="segmented" id="freeToggle">
-            <button type="button" data-mode="free" class="active">Free</button>
-            <button type="button" data-mode="all">All</button>
+      <div class="segmented" id="modelSubTabs" style="margin-bottom:14px">
+        <button type="button" data-sub="fetched" class="active">Fetched</button>
+        <button type="button" data-sub="builtin">Built-in</button>
+      </div>
+      <div class="sub-panel active" id="subFetched">
+        <div id="modelArea" style="display:none">
+          <div class="model-toolbar">
+            <div class="segmented" id="freeToggle">
+              <button type="button" data-mode="free" class="active">Free</button>
+              <button type="button" data-mode="all">All</button>
+            </div>
+            <input type="text" id="modelSearch" placeholder="Search models by name or ID…">
+            <div class="count" id="modelCount"></div>
+            <button class="btn btn-secondary btn-sm" id="selectAllBtn">Select all</button>
           </div>
-          <input type="text" id="modelSearch" placeholder="Search models by name or ID…">
-          <div class="count" id="modelCount"></div>
-          <button class="btn btn-secondary btn-sm" id="selectAllBtn">Select all</button>
+          <div class="model-list" id="modelList"></div>
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+            <input type="text" id="customModelInput" placeholder="Or add a custom model ID manually…" style="flex:1">
+            <button class="btn btn-secondary btn-sm" id="addCustomModelBtn">Add</button>
+          </div>
+          <div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn btn-primary" id="confirmModelsBtn">Confirm selection</button>
+          </div>
         </div>
-        <div id="savedModels" style="margin-bottom:14px"></div>
-        <div class="model-list" id="modelList"></div>
-        <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
-          <input type="text" id="customModelInput" placeholder="Or add a custom model ID manually…" style="flex:1">
-          <button class="btn btn-secondary btn-sm" id="addCustomModelBtn">Add</button>
-        </div>
-        <div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end">
-          <button class="btn btn-primary" id="confirmModelsBtn">Confirm selection</button>
-        </div>
+        <div class="model-hint" id="modelHint">Fetch models from a provider to see results here.</div>
+      </div>
+      <div class="sub-panel" id="subBuiltin">
+        <div class="builtin-scroll" id="builtinModels"></div>
       </div>
     </div>
   </div>
@@ -311,6 +320,15 @@ input::placeholder{color:var(--fg3)}
     <div class="modal-actions"><button class="btn btn-primary" id="modalClose">OK</button></div>
   </div>
 </div>
+<div class="modal-overlay" id="dialogOverlay">
+  <div class="modal">
+    <div class="modal-icon" id="dialogIcon" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.25)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+    <h3 id="dialogTitle">Notice</h3>
+    <p id="dialogMsg"></p>
+    <input type="text" id="dialogInput" style="display:none;margin-top:14px;width:100%;padding:10px 14px;font-size:.9rem;font-family:var(--font);background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s">
+    <div class="modal-actions" id="dialogActions"><button class="btn btn-primary" id="dialogOk">OK</button></div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -319,7 +337,7 @@ const BUILTINS={'opencode-zen':{kind:'openai-compat',base_url:'https://opencode.
 const EYE_OPEN=`<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_CLOSED=`<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
-document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();initTabs();initFetchModels();initTierEditor();initMetrics();initDeviceLogin();updateSteps();setupSync()});
+document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();initTabs();initFetchModels();initModelSubTabs();initTierEditor();initMetrics();initDeviceLogin();updateSteps();setupSync()});
 function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.providers)){S.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],ban_duration:v.quota_ban_secs||300}};if(d.tiers)S.tiers=d.tiers.map(t=>({name:t.name,entries:(t.entries||[]).map(e=>({provider:e.provider,model:e.model,is_default:!!e.is_default,weight:e.weight||1,endpoint_id:e.endpoint_id||''}))}));if(d.settings&&d.settings.default_tier)S.default_tier=d.settings.default_tier}
 async function loadState(){try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();applyServerConfig(d)}}catch(e){}for(const[k,v]of Object.entries(BUILTINS))if(!S.providers[k])S.providers[k]={...v}}
 function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
@@ -335,6 +353,47 @@ function showModal(title,msg){const o=document.getElementById('modalOverlay');do
 function hideModal(){const o=document.getElementById('modalOverlay');o.classList.remove('show');o.style.display='none'}
 document.getElementById('modalClose').addEventListener('click',hideModal);
 document.getElementById('modalOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('modalOverlay'))hideModal()});
+
+// ── Custom Promise-based dialogs (replace the native browser prompt/confirm/alert) ──
+let dialogResolver=null,dialogType='alert';
+function openDialog(opts){
+  return new Promise(resolve=>{
+    dialogResolver=resolve;dialogType=opts.type||'alert';
+    const o=document.getElementById('dialogOverlay');
+    document.getElementById('dialogTitle').textContent=opts.title||'Notice';
+    document.getElementById('dialogMsg').innerHTML=opts.msg||'';
+    const icon=document.getElementById('dialogIcon');
+    icon.style.display=(opts.icon===false)?'none':'flex';
+    const input=document.getElementById('dialogInput');
+    const actions=document.getElementById('dialogActions');
+    actions.innerHTML='';
+    if(opts.type==='prompt'){
+      input.style.display='';input.value=opts.inputValue||'';input.placeholder=opts.placeholder||'';
+      const ok=document.createElement('button');ok.className='btn btn-primary';ok.textContent=opts.confirmText||'OK';
+      ok.onclick=()=>{const v=input.value;closeDialog(opts.allowEmpty?v:(v.trim()?v.trim():null))};
+      const cancel=document.createElement('button');cancel.className='btn btn-secondary';cancel.textContent=opts.cancelText||'Cancel';
+      cancel.onclick=()=>closeDialog(null);
+      actions.append(ok,cancel);
+      setTimeout(()=>input.focus(),60);
+      input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();ok.click()}else if(e.key==='Escape'){e.preventDefault();cancel.click()}};
+    }else if(opts.type==='confirm'){
+      input.style.display='none';
+      const ok=document.createElement('button');ok.className='btn btn-primary';ok.textContent=opts.confirmText||'OK';
+      ok.onclick=()=>closeDialog(true);
+      const cancel=document.createElement('button');cancel.className='btn btn-secondary';cancel.textContent=opts.cancelText||'Cancel';
+      cancel.onclick=()=>closeDialog(false);
+      actions.append(ok,cancel);
+    }else{
+      input.style.display='none';
+      const ok=document.createElement('button');ok.className='btn btn-primary';ok.textContent=opts.confirmText||'OK';
+      ok.onclick=()=>closeDialog(true);
+      actions.append(ok);
+    }
+    o.classList.add('show');o.style.display='flex';
+  });
+}
+function closeDialog(result){const o=document.getElementById('dialogOverlay');o.classList.remove('show');o.style.display='none';const r=dialogResolver;dialogResolver=null;if(r)r(result)}
+document.getElementById('dialogOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('dialogOverlay'))closeDialog(dialogType==='alert'?true:null)});
 
 function initTabs(){document.querySelectorAll('.tab-btn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('panel-'+b.dataset.tab).classList.add('active')}))}
 function updateSteps(){const dots=document.querySelectorAll('#steps .dot');const hasProv=Object.keys(S.providers).some(k=>S.providers[k].keys.length>0);const hasMod=Object.keys(S.modelCache).length>0;const hasTier=S.tiers.length>0;const st=[true,hasProv,hasMod,hasTier,hasTier];dots.forEach((d,i)=>{d.classList.toggle('done',st[i]);d.classList.toggle('active',i===st.indexOf(true)&&st[i])})}
@@ -362,7 +421,7 @@ r.querySelector('.btn-danger').addEventListener('click',()=>{S.providers[S.selec
 l.appendChild(r)});
 document.getElementById('keyCount').textContent=keys.length?keys.length+' key'+(keys.length>1?'s':'')+' · round-robin enabled':'No keys added yet'}
 
-document.getElementById('addKeyBtn').addEventListener('click',()=>{const k=prompt('Paste API key:');if(k&&k.trim()){S.providers[S.selectedProvider].keys.push(k.trim());saveState();renderKeys(S.providers[S.selectedProvider].keys);toast('Key added')}});
+document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(k){S.providers[S.selectedProvider].keys.push(k);saveState();renderKeys(S.providers[S.selectedProvider].keys);toast('Key added')}});
 document.getElementById('saveConfig').addEventListener('click',()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;saveState();toast('Provider saved');updateSteps()});
 document.getElementById('cancelConfig').addEventListener('click',()=>{document.getElementById('providerConfig').style.display='none';S.selectedProvider=null;renderProviders()});
 document.getElementById('cancelCustom').addEventListener('click',()=>{document.getElementById('customProviderForm').style.display='none'});
@@ -372,8 +431,8 @@ document.getElementById('customProviderForm').style.display='none';S.selectedPro
 
 // ══ DEVICE LOGIN (kiro / antigravity) ══
 function initDeviceLogin(){const b=document.getElementById('deviceLoginBtn');if(b)b.onclick=deviceLogin;loadDeviceAccounts()}
-async function deviceLogin(){const p=document.getElementById('deviceProvider').value,a=document.getElementById('deviceAccount').value.trim(),n=document.getElementById('deviceName').value.trim(),s=document.getElementById('deviceStatus');if(!a){toast('Enter an account id',true);return}s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p,account_id:a,display_name:n})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}devicePoll(d,s)}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
-function devicePoll(d,s){const o=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent='Device Login — '+d.provider;document.getElementById('modalMsg').innerHTML='Visit <a href="'+esc(d.verification_uri)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(d.verification_uri)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';o.classList.add('show');o.style.display='flex';fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';document.getElementById('modalMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Account <strong>'+esc(pd.account.account_id)+'</strong> connected.</div>';toast('Device account connected');if(s)s.textContent='';loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
+async function deviceLogin(){const p=document.getElementById('deviceProvider').value,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}devicePoll(d,s)}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
+function devicePoll(d,s){const o=document.getElementById('modalOverlay');document.getElementById('modalTitle').textContent='Device Login — '+d.provider;document.getElementById('modalMsg').innerHTML='Visit <a href="'+esc(d.verification_uri)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(d.verification_uri)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';o.classList.add('show');o.style.display='flex';fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';const id=pd.identity||(pd.account&&pd.account.account_id)||'';document.getElementById('modalMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(id)+'</strong>.</div>';if(s)s.textContent='Connected as '+id;toast('Device account connected');loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
 async function loadDeviceAccounts(){const el=document.getElementById('deviceAccounts');if(!el)return;try{const r=await fetch('/api/device/accounts');if(!r.ok)return;const d=await r.json();if(!d.accounts||!d.accounts.length){el.innerHTML='<div style="font-size:.8rem;color:var(--fg3)">No device accounts connected.</div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Connected device accounts</div>'+d.accounts.map(a=>'<div class="key-row"><div class="masked">'+esc(a.provider)+' · '+esc(a.account_id)+'</div></div>').join('')}catch(e){}}
 
 // ══ MODELS ══
@@ -383,6 +442,8 @@ document.querySelectorAll('#freeToggle button').forEach(b=>b.addEventListener('c
 document.getElementById('selectAllBtn').addEventListener('click',()=>{document.querySelectorAll('#modelList input[type="checkbox"]').forEach(c=>{c.checked=true;S.selectedModels.add(c.dataset.id)})});
 document.getElementById('addCustomModelBtn').addEventListener('click',()=>{const i=document.getElementById('customModelInput'),v=i.value.trim();if(!v)return;if(S.customModels.includes(v)){toast('Already added',true);return}S.customModels.push(v);S.selectedModels.add(v);i.value='';filterModels();toast('Custom model added')});
 document.getElementById('confirmModelsBtn').addEventListener('click',confirmModels)}
+
+function initModelSubTabs(){document.querySelectorAll('#modelSubTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#modelSubTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const sub=b.dataset.sub;document.getElementById('subFetched').classList.toggle('active',sub==='fetched');document.getElementById('subBuiltin').classList.toggle('active',sub==='builtin')}))}
 
 function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.includes('(free)')||n.endsWith('-free')||n.endsWith(':free')||n.includes('-free-')}
  async function fetchModels(){const pid=document.getElementById('fetchProvider').value,ftype=document.getElementById('fetchType').value;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
@@ -394,7 +455,7 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
   const isImg=id=>{const n=String(id).toLowerCase();return n.includes('flux')||n.includes('sdxl')||n.includes('dall-e')||n.includes('dall_e')||n.includes('stable-diffusion')||n.includes('stable_diffusion')||n.includes('imagen')||n.includes('ideogram')||n.includes('image')};
   ms=ms.map(m=>({...m,image:isImg(m.id)}));
   if(ftype==='images')ms=ms.filter(m=>m.image);else if(ftype==='text')ms=ms.filter(m=>!m.image);
-  S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];document.getElementById('modelArea').style.display='';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
+   S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];document.getElementById('modelArea').style.display='';document.getElementById('modelHint').style.display='none';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
   catch(e){showModal('Model fetch failed',e.message)}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
 
 function filterModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=document.getElementById('fetchProvider').value,models=S.modelCache[pid]||[],list=document.getElementById('modelList');list.innerHTML='';let cnt=0;
@@ -405,14 +466,18 @@ const all=[...models.filter(m=>!S.freeOnly||(m.free===true||isFree(m.id))).filte
 it.querySelector('input').addEventListener('change',e=>{if(e.target.checked)S.selectedModels.add(m.id);else S.selectedModels.delete(m.id)});list.appendChild(it)});
 document.getElementById('modelCount').textContent=cnt+' model'+(cnt!==1?'s':'')+(S.freeOnly?' (free only)':'')}
 
-function confirmModels(){if(!S.selectedModels.size){toast('Select at least one model',true);return}
-const tn=prompt('Create or append to a tier name:','my-tier');if(!tn||!tn.trim())return;const pid=document.getElementById('fetchProvider').value;
+async function confirmModels(){if(!S.selectedModels.size){toast('Select at least one model',true);return}
+const tn=await openDialog({type:'prompt',title:'Save to tier',msg:'Create a new tier or append to an existing one. Enter a tier name:',inputValue:'my-tier',confirmText:'Save'});
+if(!tn)return;
+if(!/^[A-Za-z0-9_-]+$/.test(tn)){toast('Tier name may only use letters, numbers, - and _',true);return}
+const pid=document.getElementById('fetchProvider').value;
 const entries=[...S.selectedModels].map((m,i)=>({provider:pid,model:m,is_default:i===0}));
-const ex=S.tiers.find(t=>t.name===tn.trim());if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}
-else S.tiers.push({name:tn.trim(),entries});saveState();renderTiers();toast(S.selectedModels.size+' models → tier "'+tn.trim()+'"');updateSteps()}
+const ex=S.tiers.find(t=>t.name===tn);if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}
+else S.tiers.push({name:tn,entries});
+await persist();renderSavedModels();renderTiers();toast(S.selectedModels.size+' models → tier "'+tn+'"');updateSteps()}
 
 // ══ TIERS ══
-function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',()=>{const n=prompt('Tier name:');if(!n||!n.trim())return;if(S.tiers.find(t=>t.name===n.trim())){toast('Tier exists',true);return}S.tiers.push({name:n.trim(),entries:[]});saveState();renderTiers();toast('Tier "'+n.trim()+'" created')})}
+function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S.tiers.push({name:n,entries:[]});await persist();renderSavedModels();renderTiers();toast('Tier "'+n+'" created')})}
 
 function renderTiers(){const l=document.getElementById('tierList'),e=document.getElementById('tierEmpty');l.innerHTML='';if(!S.tiers.length){e.style.display='';return}e.style.display='none';
 S.tiers.forEach((tier,ti)=>{const c=document.createElement('div');c.className='tier-card';c.draggable=true;c.dataset.idx=ti;
@@ -420,7 +485,7 @@ let eh='';tier.entries.forEach((en,ei)=>{eh+=`<div class="tier-entry"><select cl
 c.innerHTML=`<div class="tier-header"><div class="grip" title="Drag to reorder"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg></div><input class="tier-name" value="${esc(tier.name)}" data-ti="${ti}" placeholder="Tier name"><span class="tier-count">${tier.entries.length} entr${tier.entries.length!==1?'ies':'y'}</span><button class="btn btn-secondary btn-sm add-entry-btn" data-ti="${ti}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Entry</button><button class="btn btn-danger btn-sm delete-tier-btn" data-ti="${ti}" style="padding:6px 10px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div><div class="tier-entries">${eh}</div>`;
 c.querySelector('.tier-name').addEventListener('change',e=>{S.tiers[ti].name=e.target.value.trim()||S.tiers[ti].name;saveState()});
 c.querySelector('.add-entry-btn').addEventListener('click',()=>{S.tiers[ti].entries.push({provider:Object.keys(S.providers)[0]||'opencode-zen',model:'',is_default:false});saveState();renderTiers()});
-c.querySelector('.delete-tier-btn').addEventListener('click',()=>{if(!confirm('Delete "'+S.tiers[ti].name+'"?'))return;S.tiers.splice(ti,1);saveState();renderTiers();updateSteps();toast('Tier deleted')});
+c.querySelector('.delete-tier-btn').addEventListener('click',async()=>{const ok=await openDialog({type:'confirm',title:'Delete tier',msg:'Delete tier "'+esc(S.tiers[ti].name)+'"? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;S.tiers.splice(ti,1);saveState();renderTiers();updateSteps();toast('Tier deleted')});
 c.querySelectorAll('.entry-provider').forEach(s=>s.addEventListener('change',e=>{S.tiers[ti].entries[parseInt(e.target.dataset.ei)].provider=e.target.value;saveState()}));
 c.querySelectorAll('.entry-model').forEach(inp=>inp.addEventListener('change',e=>{S.tiers[ti].entries[parseInt(e.target.dataset.ei)].model=e.target.value;saveState()}));
 c.querySelectorAll('.remove-entry').forEach(b=>b.addEventListener('click',()=>{S.tiers[ti].entries.splice(parseInt(b.dataset.ei),1);saveState();renderTiers()}));
@@ -428,11 +493,11 @@ c.addEventListener('dragstart',e=>{c.classList.add('dragging');e.dataTransfer.se
 c.addEventListener('dragend',()=>c.classList.remove('dragging'));
 c.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='move';c.classList.add('drag-over')});
 c.addEventListener('dragleave',()=>c.classList.remove('drag-over'));
-c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
-l.appendChild(c)})}
+ c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
+ l.appendChild(c)});renderSavedModels()}
 
 // ══ SAVED / BUILTIN MODELS ══
-function renderSavedModels(){const el=document.getElementById('savedModels');if(!el)return;const seen=new Set(),ch=[];S.tiers.forEach(t=>t.entries.forEach(e=>{const k=e.provider+'/'+e.model;if(!seen.has(k)){seen.add(k);ch.push(e)}}));if(!ch.length){el.innerHTML='';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Saved / built-in models</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+ch.map(c=>'<span class="model-chip">'+esc(c.provider)+'/'+esc(c.model)+'</span>').join('')+'</div>'}
+function renderSavedModels(){const el=document.getElementById('builtinModels');if(!el)return;const seen=new Set(),ch=[];S.tiers.forEach(t=>t.entries.forEach(e=>{const k=e.provider+'/'+e.model;if(!seen.has(k)){seen.add(k);ch.push(e)}}));if(!ch.length){el.innerHTML='<div class="empty-state" style="padding:30px 10px"><p>No saved or built-in models yet. Add models to a tier first.</p></div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:10px;font-weight:500">Saved / built-in models</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+ch.map(c=>'<span class="model-chip">'+esc(c.provider)+'/'+esc(c.model)+'</span>').join('')+'</div>'}
 
 // ══ METRICS ══
 function initMetrics(){document.getElementById('refreshMetrics').addEventListener('click',loadMetrics);if(S.metricsData)renderMetrics(S.metricsData);loadMetrics()}

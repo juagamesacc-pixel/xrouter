@@ -212,6 +212,35 @@ fn save_config(cfg: &Config) -> std::io::Result<()> {
     std::fs::write(&path, toml)
 }
 
+/// Validate a config before persisting. Tier names must match
+/// `^[A-Za-z0-9_-]+$` and every entry needs a non-empty provider + model.
+/// This guards the Models-tab "create/append tier" flow so only well-formed
+/// tiers are written to disk.
+fn validate_config(cfg: &Config) -> Option<String> {
+    for t in &cfg.tiers {
+        if t.name.is_empty()
+            || !t
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Some(format!(
+                "invalid tier name '{}': only A-Za-z0-9_- allowed",
+                t.name
+            ));
+        }
+        for e in &t.entries {
+            if e.provider.trim().is_empty() || e.model.trim().is_empty() {
+                return Some(format!(
+                    "tier '{}' has an entry with an empty provider or model",
+                    t.name
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn json_error(msg: &str) -> String {
     serde_json::json!({ "error": msg }).to_string()
 }
@@ -368,9 +397,11 @@ fn device_base_url(provider: &str) -> String {
     }
 }
 
-/// POST /api/device/login {provider, account_id, display_name}
+/// POST /api/device/login {provider}
 /// Begins a device authorization flow and returns the verification URI + user
-/// code (plus the device_code the UI must send to /api/device/poll).
+/// code (plus the device_code the UI must send to /api/device/poll). The
+/// account identity is derived automatically after the login completes — no
+/// manual `account_id` is requested.
 fn device_login(body: &str) -> (String, String) {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -381,19 +412,9 @@ fn device_login(body: &str) -> (String, String) {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let account_id = req
-        .get("account_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let display_name = req
-        .get("display_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if provider.is_empty() || account_id.is_empty() {
+    if provider.is_empty() {
         return (
-            json_error("provider and account_id are required"),
+            json_error("provider is required"),
             "400 Bad Request".into(),
         );
     }
@@ -404,15 +425,12 @@ fn device_login(body: &str) -> (String, String) {
             "400 Bad Request".into(),
         );
     }
-    let display = if display_name.is_empty() {
-        account_id.clone()
-    } else {
-        display_name
-    };
+    // No manual account id — identity is derived from the signed-in provider
+    // account after the device login completes.
     match rt().block_on(xrouter_auth::initiate_device_login(
         &prov_name,
-        &account_id,
-        &display,
+        "",
+        "",
     )) {
         Ok(init) => {
             let resp = serde_json::json!({
@@ -479,6 +497,7 @@ fn device_poll(body: &str) -> (String, String) {
             save_device_account_to_config(&prov_name, &acct);
             let resp = serde_json::json!({
                 "ok": true,
+                "identity": acct.account_id,
                 "account": {
                     "provider": acct.provider,
                     "account_id": acct.account_id,
@@ -624,20 +643,31 @@ fn handle(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
             respond(stream, &json, "200 OK", "application/json")
         }
         ("POST", "/api/config") => match serde_json::from_str::<Config>(&body) {
-            Ok(cfg) => match save_config(&cfg) {
-                Ok(()) => respond(
-                    stream,
-                    &serde_json::json!({ "ok": true }).to_string(),
-                    "200 OK",
-                    "application/json",
-                ),
-                Err(e) => respond(
-                    stream,
-                    &json_error(&format!("failed to save config: {}", e)),
-                    "500 Internal Server Error",
-                    "application/json",
-                ),
-            },
+            Ok(cfg) => {
+                if let Some(err) = validate_config(&cfg) {
+                    respond(
+                        stream,
+                        &json_error(&err),
+                        "400 Bad Request",
+                        "application/json",
+                    )
+                } else {
+                    match save_config(&cfg) {
+                        Ok(()) => respond(
+                            stream,
+                            &serde_json::json!({ "ok": true }).to_string(),
+                            "200 OK",
+                            "application/json",
+                        ),
+                        Err(e) => respond(
+                            stream,
+                            &json_error(&format!("failed to save config: {}", e)),
+                            "500 Internal Server Error",
+                            "application/json",
+                        ),
+                    }
+                }
+            }
             Err(e) => respond(
                 stream,
                 &json_error(&format!("invalid config json: {}", e)),

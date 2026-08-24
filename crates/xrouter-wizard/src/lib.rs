@@ -45,11 +45,13 @@ mod tests {
     #[test]
     fn wizard_size_budget() {
         // Must stay reasonably small for fast loading. The device-login
-        // (kiro/antigravity) flow and the Free/All model toggle added necessary
-        // markup + JS, so the budget is raised to 56 KB.
+        // (kiro/antigravity) flow, the Free/All model toggle, the Fetched /
+        // Built-in sub-tabs, the custom Promise-based dialogs, and the
+        // no-whole-page-scroll layout all added necessary markup + JS, so the
+        // budget is raised to 62 KB.
         assert!(
-            WIZARD_HTML_LEN < 56_000,
-            "wizard.html is {} bytes, exceeds 56 KB budget",
+            WIZARD_HTML_LEN < 62_000,
+            "wizard.html is {} bytes, exceeds 62 KB budget",
             WIZARD_HTML_LEN
         );
     }

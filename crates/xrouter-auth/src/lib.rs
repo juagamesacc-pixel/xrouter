@@ -158,6 +158,12 @@ impl DeviceStore {
             .retain(|a| !(a.provider == provider && a.account_id == account));
     }
 
+    /// Remove every account for `provider` (used by `device logout` without an
+    /// explicit identity — drops all signed-in accounts for that provider).
+    pub fn remove_accounts_for_provider(&mut self, provider: &str) {
+        self.accounts.retain(|a| a.provider != provider);
+    }
+
     /// Number of accounts configured for `provider`.
     pub fn count_for(&self, provider: &str) -> usize {
         self.accounts
@@ -217,6 +223,7 @@ pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
         anyhow::bail!("device token refresh failed ({}): {}", status, txt);
     }
     let v: serde_json::Value = resp.json().await.context("parse token refresh response")?;
+    let old_token = acct.access_token.clone();
     if let Some(tok) = v.get("access_token").and_then(|x| x.as_str()) {
         acct.access_token = tok.to_string();
     }
@@ -225,6 +232,16 @@ pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
     }
     if let Some(secs) = v.get("expires_in").and_then(|x| x.as_u64()) {
         acct.expires_at = Some(SystemTime::now() + Duration::from_secs(secs));
+    }
+    // If the access token actually changed, the signed-in identity may have
+    // changed too (e.g. a rotated JWT). Re-derive and update the account key so
+    // the off-RAM store stays consistent.
+    if acct.access_token != old_token {
+        let identity = derive_identity(&acct.provider, &acct.access_token).await;
+        if identity != acct.account_id {
+            acct.account_id = identity.clone();
+            acct.display_name = Some(identity);
+        }
     }
     Ok(())
 }
@@ -331,9 +348,21 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
                 .get("expires_in")
                 .and_then(|x| x.as_u64())
                 .map(|s| SystemTime::now() + Duration::from_secs(s));
+            // Derive the account identity directly from the signed-in provider
+            // account. The token exchange response may already carry `email` /
+            // `sub`; otherwise we fetch it from the provider's userinfo (or
+            // decode the access-token JWT). No manual account_id is required.
+            let identity = match v
+                .get("email")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.get("sub").and_then(|x| x.as_str()))
+            {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => derive_identity(&init.provider, &access_token).await,
+            };
             return Ok(DeviceAccountConfig {
-                account_id: init.account.clone(),
-                display_name: Some(init.display.clone()),
+                account_id: identity.clone(),
+                display_name: Some(identity.clone()),
                 provider: init.provider.clone(),
                 access_token,
                 refresh_token,
@@ -350,6 +379,131 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
         }
         anyhow::bail!("device login failed: {}", err);
     }
+}
+
+// --- identity derivation (no manual account_id required) --------------------
+
+/// Derive a stable account identity from the signed-in provider account.
+///
+/// * `antigravity` (Google): use `email`/`sub` from the token response if
+///   present, otherwise call Google's userinfo endpoint to fetch `email`.
+/// * `kiro` (AWS Builder ID): try the OIDC userinfo endpoint, otherwise decode
+///   the access-token JWT `sub`/`email` claims (no signature verification),
+///   falling back to `kiro-<first8(sha256(access_token))>`.
+/// * generic `device:<name>`: `<name>-<first8(sha256(access_token))>`.
+///
+/// The returned string is used as both `account_id` and `display_name`, and as
+/// the unique key (with `provider`) for [`DeviceStore::add_account`], so
+/// re-login with the same provider account updates tokens instead of
+/// duplicating.
+pub async fn derive_identity(provider: &str, access_token: &str) -> String {
+    match normalize_provider(provider) {
+        "antigravity" => derive_antigravity_identity(access_token).await,
+        "kiro" => derive_kiro_identity(access_token).await,
+        other => format!("{}-{}", other, short_token_hash(access_token)),
+    }
+}
+
+async fn derive_antigravity_identity(access_token: &str) -> String {
+    match google_userinfo(access_token).await {
+        Some(email) if !email.is_empty() => email,
+        _ => format!("antigravity-{}", short_token_hash(access_token)),
+    }
+}
+
+async fn google_userinfo(access_token: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", access_token),
+        )
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    v.get("email").and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+async fn derive_kiro_identity(access_token: &str) -> String {
+    // Prefer the OIDC userinfo endpoint for the registered client.
+    if let Some(id) = kiro_userinfo(access_token).await {
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    // Fall back to decoding the access-token JWT claims (no signature check).
+    if let Some(claims) = decode_jwt_claims(access_token) {
+        if let Some(email) = claims.get("email").and_then(|x| x.as_str()) {
+            if !email.is_empty() {
+                return email.to_string();
+            }
+        }
+        if let Some(sub) = claims.get("sub").and_then(|x| x.as_str()) {
+            if !sub.is_empty() {
+                return sub.to_string();
+            }
+        }
+    }
+    format!("kiro-{}", short_token_hash(access_token))
+}
+
+async fn kiro_userinfo(access_token: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(kiro_userinfo_endpoint())
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", access_token),
+        )
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    v.get("email")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("sub").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
+}
+
+fn kiro_userinfo_endpoint() -> String {
+    "https://api.kiro.dev/oauth/userinfo".to_string()
+}
+
+/// Decode the payload of a JWT (base64url, no signature verification) into a
+/// JSON value. Returns `None` when the token is not a 3-part JWT or the payload
+/// is not valid JSON.
+fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let payload = parts[1];
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// First 8 hex chars of sha256(token) — used as a stable, non-secret
+/// fingerprint for the fallback identity.
+fn short_token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let digest = hasher.finalize();
+    let mut s = String::new();
+    for b in digest.iter().take(4) {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
 }
 
 // --- provider-specific endpoints (placeholders; real hosts filled by config) --

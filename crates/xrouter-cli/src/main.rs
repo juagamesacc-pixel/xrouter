@@ -107,16 +107,11 @@ enum Commands {
 #[derive(Subcommand)]
 enum DeviceCmd {
     /// Perform a device login for a provider (kiro/antigravity). Prints the
-    /// verification URL + user code and polls until authorization completes.
+    /// verification URL + user code, polls until authorization completes, and
+    /// derives the account identity automatically (no manual account id).
     Login {
         /// Device provider name (kiro or antigravity).
         provider: String,
-        /// Account id / email for the device provider.
-        #[arg(long)]
-        account: String,
-        /// Optional friendly display name.
-        #[arg(long)]
-        name: Option<String>,
     },
     /// List stored device accounts (off-RAM token store).
     List,
@@ -125,9 +120,10 @@ enum DeviceCmd {
         /// Device provider name.
         #[arg(long)]
         provider: String,
-        /// Account id to remove.
+        /// Account identity to remove. If omitted, all accounts for the
+        /// provider are removed.
         #[arg(long)]
-        account: String,
+        identity: Option<String>,
     },
 }
 
@@ -246,11 +242,11 @@ async fn main() -> anyhow::Result<()> {
             run_test(tier, allow_live, base_url).await?;
         }
         Commands::Device { sub } => match sub {
-            DeviceCmd::Login { provider, account, name } => {
-                device_login(provider, account, name).await?;
+            DeviceCmd::Login { provider } => {
+                device_login(provider).await?;
             }
             DeviceCmd::List => device_list().await?,
-            DeviceCmd::Logout { provider, account } => device_logout(provider, account).await?,
+            DeviceCmd::Logout { provider, identity } => device_logout(provider, identity).await?,
         },
     }
     Ok(())
@@ -487,11 +483,7 @@ fn default_device_base_url(provider: &str) -> String {
     }
 }
 
-async fn device_login(
-    provider: String,
-    account: String,
-    name: Option<String>,
-) -> anyhow::Result<()> {
+async fn device_login(provider: String) -> anyhow::Result<()> {
     let prov_name = xrouter_auth::normalize_provider(&provider).to_string();
     if !xrouter_auth::DEVICE_PROVIDERS.contains(&prov_name.as_str()) {
         anyhow::bail!(
@@ -499,12 +491,13 @@ async fn device_login(
             provider
         );
     }
-    let display = name.unwrap_or_else(|| account.clone());
     println!(
-        "Initiating device login for '{}' (account '{}')…",
-        prov_name, account
+        "Initiating device login for '{}'…",
+        prov_name
     );
-    let init = xrouter_auth::initiate_device_login(&prov_name, &account, &display).await?;
+    // No manual account id — identity is derived from the signed-in provider
+    // account after the login completes.
+    let init = xrouter_auth::initiate_device_login(&prov_name, "", "").await?;
     println!("To complete login, open:");
     println!("  {}", init.verification_uri);
     println!("and enter the code: {}", init.user_code);
@@ -514,7 +507,7 @@ async fn device_login(
 
     // Persist tokens in the off-RAM device-account store (0600).
     let mut store = xrouter_auth::DeviceStore::load().unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
-    store.add_account(acct);
+    store.add_account(acct.clone());
     store.save()?;
 
     // Record the account metadata in the main config (no secrets).
@@ -529,10 +522,10 @@ async fn device_login(
             accounts: vec![],
         }
     });
-    if !pcfg.accounts.iter().any(|a| a.account_id == account) {
+    if !pcfg.accounts.iter().any(|a| a.account_id == acct.account_id) {
         pcfg.accounts.push(xrouter_config::DeviceAccountConfig {
-            account_id: account.clone(),
-            display_name: Some(display.clone()),
+            account_id: acct.account_id.clone(),
+            display_name: acct.display_name.clone(),
             provider: prov_name.clone(),
             access_token: String::new(),
             refresh_token: None,
@@ -541,8 +534,8 @@ async fn device_login(
     }
     save(&cfg)?;
     println!(
-        "✔ device account '{}' for '{}' stored and enabled.",
-        account, prov_name
+        "✔ Logged in as '{}' for '{}'.",
+        acct.account_id, prov_name
     );
     Ok(())
 }
@@ -582,19 +575,46 @@ async fn device_list() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn device_logout(provider: String, account: String) -> anyhow::Result<()> {
+async fn device_logout(
+    provider: String,
+    identity: Option<String>,
+) -> anyhow::Result<()> {
     let prov_name = xrouter_auth::normalize_provider(&provider).to_string();
     let mut store =
         xrouter_auth::DeviceStore::load().unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
-    store.remove_account(&prov_name, &account);
+    let removed: Vec<String> = match &identity {
+        Some(id) => {
+            store.remove_account(&prov_name, id);
+            vec![id.clone()]
+        }
+        None => {
+            let ids: Vec<String> = store
+                .accounts
+                .iter()
+                .filter(|a| a.provider == prov_name)
+                .map(|a| a.account_id.clone())
+                .collect();
+            store.remove_accounts_for_provider(&prov_name);
+            ids
+        }
+    };
     store.save()?;
 
     let mut cfg = load().unwrap_or_else(|_| Config::default_with_builtins());
     if let Some(p) = cfg.providers.get_mut(&provider) {
-        p.accounts.retain(|a| a.account_id != account);
+        p.accounts
+            .retain(|a| !removed.iter().any(|id| id == &a.account_id));
     }
     save(&cfg)?;
-    println!("✔ removed device account '{}' for '{}'", account, prov_name);
+    if let Some(id) = &identity {
+        println!("✔ removed device account '{}' for '{}'", id, prov_name);
+    } else {
+        println!(
+            "✔ removed {} device account(s) for '{}'",
+            removed.len(),
+            prov_name
+        );
+    }
     Ok(())
 }
 
