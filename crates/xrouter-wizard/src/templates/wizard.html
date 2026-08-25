@@ -65,6 +65,7 @@ input::placeholder{color:var(--fg3)}
 .eye-btn:hover{background:var(--bg3);border-color:var(--border2)}
 .eye-btn svg{width:18px;height:18px;stroke:var(--fg2);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .key-row .btn-danger{flex-shrink:0}
+.key-act{width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:var(--bg4);border:1.5px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;flex-shrink:0;transition:all .2s var(--ease);color:var(--fg2)}.key-act:hover{background:var(--bg3);border-color:var(--border2);color:var(--fg)}.key-act svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.key-act.del-btn:hover{border-color:var(--red);color:var(--red)}.keys-group{background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px}.keys-group-head{margin-bottom:10px}
 .key-count{font-size:.78rem;color:var(--fg3);margin-top:6px}
 .ban-row{display:flex;align-items:center;gap:12px;margin-top:16px;padding:12px 16px;background:var(--bg3);border-radius:var(--radius-sm);border:1px solid var(--border)}
 .ban-row label{margin:0;white-space:nowrap;font-size:.85rem;color:var(--fg2);font-weight:500}
@@ -172,7 +173,7 @@ input::placeholder{color:var(--fg3)}
 .dropdown-search{padding:8px 10px;border-bottom:1px solid var(--border)}
 .dropdown-search input{padding:7px 10px;font-size:.82rem}
 .dropdown-search input:focus{border-color:var(--accent)}
-#dialogInput{display:none;margin-top:14px;width:100%;padding:10px 14px;font-size:.9rem;background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
+#dialogInput{margin-top:14px;width:100%;padding:10px 14px;font-size:.9rem;background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
 </style>
 </head>
 <body>
@@ -181,6 +182,7 @@ input::placeholder{color:var(--fg3)}
   <div class="steps" id="steps"><div class="dot active"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
   <div class="tab-bar" id="tabBar">
     <button class="tab-btn active" data-tab="providers">Providers</button>
+    <button class="tab-btn" data-tab="keys">Keys</button>
     <button class="tab-btn" data-tab="models">Models</button>
     <button class="tab-btn" data-tab="tiers">Tiers</button>
     <button class="tab-btn" data-tab="metrics">Metrics</button>
@@ -253,6 +255,9 @@ input::placeholder{color:var(--fg3)}
       </div>
     </div>
   </div>
+
+  <!-- ══ KEYS (central, all providers) ══ -->
+  <div class="tab-panel" id="panel-keys"><div class="section" style="animation-delay:.15s"><h2>API Keys</h2><p class="sub">All provider keys in one place. Reveal, copy, regenerate or delete. Changes persist and are verified against disk.</p><div id="keysCentral"></div></div></div>
 
   <!-- ══ MODELS ══ -->
   <div class="tab-panel" id="panel-models">
@@ -364,7 +369,7 @@ const EYE_OPEN=`<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-1
 const EYE_CLOSED=`<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 let customKindValue='openai-compat',deviceProviderValue='kiro',fetchProviderValue='',fetchTypeValue='text',openDropdownId=null;
 
-document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();initTabs();initFetchModels();initModelSubTabs();initTierEditor();initMetrics();initDeviceLogin();initRouterAccess();updateSteps();setupSync()});
+ document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();renderKeysCentral();initTabs();initFetchModels();initModelSubTabs();initTierEditor();initMetrics();initDeviceLogin();initRouterAccess();updateSteps();setupSync()});
 function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.providers)){S.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],ban_duration:v.quota_ban_secs||300}};if(d.tiers)S.tiers=d.tiers.map(t=>({name:t.name,entries:(t.entries||[]).map(e=>({provider:e.provider,model:e.model,is_default:!!e.is_default,weight:e.weight||1,endpoint_id:e.endpoint_id||''}))}));if(d.settings){if(d.settings.default_tier)S.default_tier=d.settings.default_tier;S.api_token=(d.settings.api_token&&d.settings.api_token.length)?d.settings.api_token:null}}
 async function loadState(){try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();applyServerConfig(d)}}catch(e){}for(const[k,v]of Object.entries(BUILTINS))if(!S.providers[k])S.providers[k]={...v}}
 function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null,api_token:S.api_token||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
@@ -439,7 +444,7 @@ function saveState(){persist();try{localStorage.setItem('xrouter_wizard',JSON.st
 let syncChannel=null;
 function setupSync(){try{syncChannel=new BroadcastChannel('wizard-sync');syncChannel.onmessage=e=>{if(e.data==='reload')syncFromServer()}}catch(e){}window.addEventListener('storage',e=>{if(e.key==='wizard_sync')syncFromServer()});window.addEventListener('focus',()=>syncFromServer())}
 async function syncFromServer(){try{const r=await fetch('/api/config');if(!r.ok)return;const d=await r.json();applyServerConfig(d);renderAll();loadAuthStatus()}catch(e){}}
-function renderAll(){renderProviders();renderTiers();renderSavedModels();populateFetchSelect();updateSteps();initDeviceLogin();loadAuthStatus()}
+function renderAll(){renderProviders();renderTiers();renderSavedModels();renderKeysCentral();populateFetchSelect();updateSteps();initDeviceLogin();loadAuthStatus()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg,err){const el=document.getElementById('toast');el.textContent=(err?'✕ ':'✔ ')+msg;el.className='toast show'+(err?' error':'');setTimeout(()=>el.classList.remove('show'),3000)}
 function showModal(title,msg){openDialog({type:'alert',title:title||'Notice',msg:String(msg||'')})}
@@ -558,6 +563,14 @@ document.getElementById('saveCustom').addEventListener('click',()=>{const id=doc
 if(!id||!url){toast('Fill in all fields',true);return}S.providers[id]={kind,base_url:url,keys:[],ban_duration:300,enabled:true};saveState();
 document.getElementById('customProviderForm').style.display='none';S.selectedProvider=id;renderProviders();showProviderConfig(id);toast('Custom provider created')});
 
+// ══ CENTRAL KEYS TAB ══
+function maskKey(k){if(!k)return'••••••••';if(k.length<=8)return'••••••••';return k.slice(0,3)+'*...*'+k.slice(-4)}
+function copyKey(k){navigator.clipboard.writeText(k).then(()=>toast('Key copied ✓')).catch(()=>showModal('Copy failed','Clipboard unavailable — reveal and select manually.'))}
+function renderKeysCentral(){const r=document.getElementById('keysCentral');if(!r)return;const ids=Object.keys(S.providers).filter(k=>S.providers[k]);if(!ids.length){r.innerHTML='<div class="empty-state" style="padding:30px 10px"><p>No providers configured yet.</p></div>';return}let h='';ids.forEach(id=>{const p=S.providers[id],keys=Array.isArray(p.keys)?p.keys:[];h+='<div class="keys-group"><div class="keys-group-head" style="display:flex;align-items:center;justify-content:space-between"><span class="provider-name" style="font-weight:600;color:var(--fg)">'+esc(id)+'</span><button class="btn btn-secondary btn-sm" data-add="'+esc(id)+'">+ Add key</button></div>';if(!keys.length){h+='<div class="key-row"><div class="masked" style="color:var(--fg3)">No keys added</div></div>'}else{keys.forEach((key,i)=>{h+='<div class="key-row" data-pid="'+esc(id)+'" data-idx="'+i+'"><div class="masked">'+maskKey(key)+'</div><div class="eye-btn" role="button" tabindex="0" aria-label="Toggle key '+(i+1)+'">'+EYE_CLOSED+'</div><button class="key-act copy-btn" title="Copy">⧉</button><button class="key-act regen-btn" title="Regenerate">⟳</button><button class="key-act del-btn btn-danger" title="Delete">✕</button></div>'})}h+='</div>'});r.innerHTML=h;r.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>addKeyCentral(b.dataset.add));r.querySelectorAll('.key-row[data-pid]').forEach(row=>{const pid=row.dataset.pid,idx=+row.dataset.idx,key=S.providers[pid].keys[idx],eye=row.querySelector('.eye-btn'),mask=row.querySelector('.masked');let v=false;eye.onclick=()=>{v=!v;mask.textContent=v?key:maskKey(key);mask.classList.toggle('visible',v);eye.innerHTML=v?EYE_OPEN:EYE_CLOSED};eye.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();eye.click()}};row.querySelector('.copy-btn').onclick=()=>copyKey(key);row.querySelector('.del-btn').onclick=()=>deleteKeyCentral(pid,idx);row.querySelector('.regen-btn').onclick=()=>regenKeyCentral(pid,idx)})}
+async function addKeyCentral(pid){const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k||!S.providers[pid])return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not save key',r.error);return}renderKeysCentral();renderProviders();toast('Key added ✓ (verified)')}
+async function deleteKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Delete key',msg:'Delete this key for <strong>'+esc(pid)+'</strong>? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not delete key',r.error);return}renderKeysCentral();renderProviders();toast('Key deleted ✓ (verified)')}
+async function regenKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Regenerate key',msg:'The existing key for <strong>'+esc(pid)+'</strong> will be removed and replaced. Continue?',confirmText:'Regenerate',cancelText:'Cancel'});if(!ok)return;const k=await openDialog({type:'prompt',title:'New API key',msg:'Paste the new API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Save'});if(!k)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not regenerate key',r.error);return}renderKeysCentral();renderProviders();toast('Key regenerated ✓ (verified)')}
+
 // ══ DEVICE LOGIN (kiro / antigravity) ══
 function initDeviceLogin(){const b=document.getElementById('deviceLoginBtn');if(b)b.onclick=deviceLogin;loadDeviceAccounts()}
 async function deviceLogin(){const p=deviceProviderValue,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}if(d.auth_url){googleLogin(d,s)}else{devicePoll(d,s)}}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
@@ -580,14 +593,16 @@ document.getElementById('selectAllBtn').addEventListener('click',()=>{document.q
 document.getElementById('addCustomModelBtn').addEventListener('click',()=>{const i=document.getElementById('customModelInput'),v=i.value.trim();if(!v)return;if(S.customModels.includes(v)){toast('Already added',true);return}S.customModels.push(v);S.selectedModels.add(v);i.value='';filterModels();toast('Custom model added')});
 document.getElementById('confirmModelsBtn').addEventListener('click',confirmModels)}
 
-function initModelSubTabs(){document.querySelectorAll('#modelSubTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#modelSubTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const sub=b.dataset.sub;document.getElementById('subFetched').classList.toggle('active',sub==='fetched');document.getElementById('subBuiltin').classList.toggle('active',sub==='builtin')}))}
+function initModelSubTabs(){document.querySelectorAll('#modelSubTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#modelSubTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const sub=b.dataset.sub;document.getElementById('subFetched').classList.toggle('active',sub==='fetched');document.getElementById('subBuiltin').classList.toggle('active',sub==='builtin');if(sub==='builtin')renderSavedModels()}))}
 
 function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.includes('(free)')||n.endsWith('-free')||n.endsWith(':free')||n.includes('-free-')}
- async function fetchModels(){const pid=fetchProviderValue,ftype=fetchTypeValue;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
+  async function fetchModels(){const pid=fetchProviderValue,ftype=fetchTypeValue;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
+  const p=S.providers[pid];if(!p.keys||!p.keys.length){toast('Add an API key first',true);return}
   const btn=document.getElementById('fetchModelsBtn');btn.disabled=true;btn.innerHTML=`Fetching<span class="dots"><span></span><span></span><span></span></span>`;
-  try{const r=await fetch('/api/models/fetch?provider='+encodeURIComponent(pid));const d=await r.json();
-   if(d.error){showModal('Model fetch failed',d.error);return}
-   let ms=(d.data||[]).map(m=>({id:m.id||m.name||String(m),owned_by:m.owned_by||'',free:m.free===true}));
+  try{const r=await fetch(p.base_url.replace(/\/$/,'')+'/models',{headers:{'Authorization':'Bearer '+p.keys[0]}});
+   if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
+   if(d.error)throw new Error(d.error);
+   let ms=(d.data||d||[]).map(m=>({id:m.id||m.name||String(m),owned_by:m.owned_by||'',free:m.free===true}));
   // Image-model heuristic (flux/sdxl/dall-e/stable-diffusion/imagen/ideogram/image)
   const isImg=id=>{const n=String(id).toLowerCase();return n.includes('flux')||n.includes('sdxl')||n.includes('dall-e')||n.includes('dall_e')||n.includes('stable-diffusion')||n.includes('stable_diffusion')||n.includes('imagen')||n.includes('ideogram')||n.includes('image')};
   ms=ms.map(m=>({...m,image:isImg(m.id)}));

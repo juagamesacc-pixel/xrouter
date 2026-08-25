@@ -51,10 +51,13 @@ mod tests {
         // antigravity PKCE browser-login flow (Open Google Login button +
         // account-poll) pushed it just over 62 KB, so the budget was raised to
         // 66 KB. The Router Access card (API-key enable/disable + key-display
-        // modal) added the router auth UI, raising it again to 72 KB.
+        // modal) added the router auth UI, raising it again to 72 KB. The
+        // central Keys tab (combined per-provider key list with reveal / copy /
+        // regenerate / delete, all persisting via the verified POST /api/config
+        // flow) raised it to 78 KB.
         assert!(
-            WIZARD_HTML_LEN < 72_000,
-            "wizard.html is {} bytes, exceeds 72 KB budget",
+            WIZARD_HTML_LEN < 78_000,
+            "wizard.html is {} bytes, exceeds 78 KB budget",
             WIZARD_HTML_LEN
         );
     }

@@ -1,7 +1,8 @@
 //! Universal model addressing for request routing.
 //!
-//! A request's `model` field is resolved to a routing target using a 3-step
-//! fallback:
+//! A request's `model` field is resolved to a routing target using a layered
+//! fallback that copes with every id format a user might copy from a built-in
+//! list, a provider's `/models` response, or another tool:
 //!
 //! 1. **Exact tier name** → existing strict tier routing (failover *within*
 //!    the tier only; no cross-tier degradation).
@@ -9,14 +10,25 @@
 //!    The provider must be configured; the model id is taken verbatim. There is
 //!    no cross-model failover — retries only rotate keys and quota-bans still
 //!    apply. This makes tiers optional: any model of any configured provider is
-//!    addressable by id.
-//! 3. **Bare model id** → search every configured tier entry for an exact
-//!    `model` match. A unique match routes directly. An ambiguous match (the
-//!    same id in 2+ providers) is rejected with the candidate options. No match
-//!    falls through to the existing 404 `unknown_tier` error.
+//!    addressable by id (on-demand routing).
+//!    - If the provider portion is *not* a configured provider, the whole
+//!      string is treated as a bare model id below (this is how OpenRouter-style
+//!      ids like `cohere/north-mini-code:free` resolve: `cohere` is not an
+//!      xrouter provider, but `openrouter` has that exact id in its model
+//!      cache, so we route to `openrouter` with the full id).
+//! 3. **Bare model id** (no configured provider prefix) → search every
+//!    configured tier entry's `model` field for an exact match, then search the
+//!    on-demand model cache (`known`) across all configured providers. A unique
+//!    match routes directly; an ambiguous match (same id in 2+ providers) is
+//!    rejected with the candidate options.
+//! 4. **`:free` / `-free` alias** → if the bare search fails and the id ends
+//!    with a free suffix, strip it and retry the bare search (so
+//!    `cohere/north-mini-code:free` still resolves when the cache stores the
+//!    id without the suffix, and vice-versa).
 
 use xrouter_config::Config;
 use xrouter_core::{EndpointId, ModelEntry, Tier};
+use xrouter_providers::ModelCache;
 
 /// A resolved routing target.
 #[derive(Debug)]
@@ -40,49 +52,140 @@ pub enum ResolutionError {
 
 /// Resolve a request `model` field to a routing target.
 ///
-/// See the module docs for the 3-step fallback. `cfg` is the live configuration.
-pub fn resolve_model(cfg: &Config, model: &str) -> Result<ResolvedTarget, ResolutionError> {
+/// See the module docs for the layered fallback. `cfg` is the live
+/// configuration; `known` is the optional on-demand model cache (populated by
+/// the server's `refresh_model_cache`). When `None`, only tier entries and
+/// configured-provider `provider/model` addressing are considered.
+pub fn resolve_model(
+    cfg: &Config,
+    model: &str,
+    known: Option<&ModelCache>,
+) -> Result<ResolvedTarget, ResolutionError> {
+    let raw = model.trim();
+    if raw.is_empty() {
+        return Err(ResolutionError::NotFound);
+    }
+
     // Step 1: exact tier-name match → existing strict tier routing.
-    if let Some(tier) = cfg.tiers.iter().find(|t| t.name == model) {
+    if let Some(tier) = cfg.tiers.iter().find(|t| t.name == raw) {
         return Ok(ResolvedTarget::Tier(tier.clone()));
     }
 
     // Step 2: `provider/model` format → route directly to that single endpoint.
-    if let Some((prov, mid)) = model.split_once('/') {
-        if !prov.is_empty() && !mid.is_empty() && cfg.providers.contains_key(prov) {
-            return Ok(ResolvedTarget::Direct(ModelEntry {
-                provider: prov.to_string(),
-                model: mid.to_string(),
-                is_default: true,
-                weight: 1,
-                endpoint_id: EndpointId::new(prov, mid),
-            }));
+    if let Some((prov, mid)) = raw.split_once('/') {
+        if !prov.is_empty() && !mid.is_empty() {
+            if cfg.providers.contains_key(prov) {
+                // On-demand direct routing to a configured provider. The model
+                // id is taken verbatim; the upstream provider validates it.
+                return Ok(ResolvedTarget::Direct(ModelEntry {
+                    provider: prov.to_string(),
+                    model: mid.to_string(),
+                    is_default: true,
+                    weight: 1,
+                    endpoint_id: EndpointId::new(prov, mid),
+                }));
+            }
+            // The provider portion is not a configured provider, so this is not
+            // a valid `provider/model` address. Fall through to step 3 — the
+            // whole string may be a bare model id that happens to contain a
+            // slash (e.g. "cohere/north-mini-code:free" from OpenRouter's
+            // /models list, where `cohere` is not an xrouter provider but
+            // `openrouter` knows the full id).
         }
-        // The provider portion is not a configured provider, so this is not a
-        // valid `provider/model` address. Fall through to step 3 — the whole
-        // string may be a bare model id that happens to contain a slash
-        // (e.g. "black-forest-labs/FLUX.1-schnell").
     }
 
-    // Step 3: bare model id across all configured tier entries.
-    let matches: Vec<(String, String)> = cfg
-        .tiers
-        .iter()
-        .flat_map(|t| t.entries.iter())
-        .filter(|e| e.model == model)
-        .map(|e| (e.provider.clone(), e.model.clone()))
-        .collect();
+    // Step 3 + 4: bare model id search, with `:free`/`-free` suffix stripping.
+    resolve_bare(cfg, raw, known)
+}
 
-    match matches.len() {
+/// Search tier entries and the on-demand cache for a bare model id, applying a
+/// `:free`/`-free` suffix-strip fallback when the first pass finds nothing.
+fn resolve_bare(
+    cfg: &Config,
+    model: &str,
+    known: Option<&ModelCache>,
+) -> Result<ResolvedTarget, ResolutionError> {
+    let candidates = collect_bare_candidates(cfg, model, known);
+    if !candidates.is_empty() {
+        return pick(candidates);
+    }
+
+    // Step 4: `:free` / `-free` alias handling.
+    let stripped = strip_free_suffix(model);
+    if stripped != model {
+        let candidates = collect_bare_candidates(cfg, &stripped, known);
+        if !candidates.is_empty() {
+            return pick(candidates);
+        }
+    }
+
+    Err(ResolutionError::NotFound)
+}
+
+/// Gather every `(provider, model)` candidate for a bare id from both tier
+/// entries and the on-demand model cache. Results are de-duplicated.
+fn collect_bare_candidates(
+    cfg: &Config,
+    model: &str,
+    known: Option<&ModelCache>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+
+    // (a) tier entries: exact `model` match.
+    for t in &cfg.tiers {
+        for e in &t.entries {
+            if e.model == model {
+                out.push((e.provider.clone(), e.model.clone()));
+            }
+        }
+    }
+
+    // (b) on-demand cache: any configured, enabled provider that lists this id.
+    if let Some(cache) = known {
+        for (prov, pcfg) in &cfg.providers {
+            if !pcfg.enabled {
+                continue;
+            }
+            if let Some(models) = cache.get_or_stale(prov) {
+                for m in models {
+                    if m.id == model {
+                        out.push((prov.clone(), m.id.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Build a direct target from a single candidate, or report ambiguity.
+fn pick(candidates: Vec<(String, String)>) -> Result<ResolvedTarget, ResolutionError> {
+    match candidates.len() {
         0 => Err(ResolutionError::NotFound),
         1 => Ok(ResolvedTarget::Direct(ModelEntry {
-            provider: matches[0].0.clone(),
-            model: matches[0].1.clone(),
+            provider: candidates[0].0.clone(),
+            model: candidates[0].1.clone(),
             is_default: true,
             weight: 1,
-            endpoint_id: EndpointId::new(&matches[0].0, &matches[0].1),
+            endpoint_id: EndpointId::new(&candidates[0].0, &candidates[0].1),
         })),
-        _ => Err(ResolutionError::Ambiguous(matches)),
+        _ => Err(ResolutionError::Ambiguous(candidates)),
+    }
+}
+
+/// Strip a trailing `:free` or `-free` suffix (case-sensitive on the suffix
+/// only; the prefix keeps its original casing). Returns the input unchanged if
+/// no free suffix is present.
+fn strip_free_suffix(model: &str) -> String {
+    if model.ends_with(":free") {
+        model[..model.len() - ":free".len()].to_string()
+    } else if model.ends_with("-free") {
+        model[..model.len() - "-free".len()].to_string()
+    } else {
+        model.to_string()
     }
 }
 
@@ -91,6 +194,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use xrouter_config::{Config, ProviderConfig, Settings};
+    use xrouter_providers::ModelCache;
 
     fn cfg_with_tiers(tiers: Vec<Tier>) -> Config {
         let mut providers = HashMap::new();
@@ -116,6 +220,17 @@ mod tests {
                 accounts: vec![],
             },
         );
+        providers.insert(
+            "together-image".to_string(),
+            ProviderConfig {
+                kind: "openai-compat".into(),
+                base_url: "https://api.together.ai/v1".into(),
+                enabled: true,
+                keys: vec![],
+                quota_ban_secs: 300,
+                accounts: vec![],
+            },
+        );
         Config {
             settings: Settings::default(),
             providers,
@@ -133,13 +248,20 @@ mod tests {
         }
     }
 
+    /// A temp-backed model cache so tests never touch the real ~/.cache.
+    fn temp_cache() -> ModelCache {
+        let dir = std::env::temp_dir().join(format!("xrouter-resolve-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        ModelCache::new(dir.join("models.json"))
+    }
+
     #[test]
     fn tier_name_match_uses_strict_tier() {
         let cfg = cfg_with_tiers(vec![Tier::new(
             "big-pickle",
             vec![entry("opencode-zen", "big-pickle")],
         )]);
-        match resolve_model(&cfg, "big-pickle").unwrap() {
+        match resolve_model(&cfg, "big-pickle", None).unwrap() {
             ResolvedTarget::Tier(t) => assert_eq!(t.name, "big-pickle"),
             _ => panic!("expected tier target"),
         }
@@ -151,10 +273,27 @@ mod tests {
             "big-pickle",
             vec![entry("opencode-zen", "big-pickle")],
         )]);
-        match resolve_model(&cfg, "opencode-zen/mimo-v2.5-free").unwrap() {
+        match resolve_model(&cfg, "opencode-zen/mimo-v2.5-free", None).unwrap() {
             ResolvedTarget::Direct(e) => {
                 assert_eq!(e.provider, "opencode-zen");
                 assert_eq!(e.model, "mimo-v2.5-free");
+            }
+            _ => panic!("expected direct target"),
+        }
+    }
+
+    #[test]
+    fn provider_model_format_with_builtin_tier_name() {
+        // `opencode-zen/big-pickle` is both a tier name (big-pickle) and a
+        // provider/model id; the provider/model form must route directly.
+        let cfg = cfg_with_tiers(vec![Tier::new(
+            "big-pickle",
+            vec![entry("opencode-zen", "big-pickle")],
+        )]);
+        match resolve_model(&cfg, "opencode-zen/big-pickle", None).unwrap() {
+            ResolvedTarget::Direct(e) => {
+                assert_eq!(e.provider, "opencode-zen");
+                assert_eq!(e.model, "big-pickle");
             }
             _ => panic!("expected direct target"),
         }
@@ -166,7 +305,7 @@ mod tests {
             "zen-free",
             vec![entry("opencode-zen", "mimo-v2.5-free")],
         )]);
-        match resolve_model(&cfg, "mimo-v2.5-free").unwrap() {
+        match resolve_model(&cfg, "mimo-v2.5-free", None).unwrap() {
             ResolvedTarget::Direct(e) => {
                 assert_eq!(e.provider, "opencode-zen");
                 assert_eq!(e.model, "mimo-v2.5-free");
@@ -181,7 +320,7 @@ mod tests {
             Tier::new("a", vec![entry("opencode-zen", "mimo-v2.5-free")]),
             Tier::new("b", vec![entry("openrouter", "mimo-v2.5-free")]),
         ]);
-        match resolve_model(&cfg, "mimo-v2.5-free") {
+        match resolve_model(&cfg, "mimo-v2.5-free", None) {
             Err(ResolutionError::Ambiguous(opts)) => {
                 assert_eq!(opts.len(), 2);
                 assert!(opts.contains(&("opencode-zen".to_string(), "mimo-v2.5-free".to_string())));
@@ -197,7 +336,7 @@ mod tests {
             "big-pickle",
             vec![entry("opencode-zen", "big-pickle")],
         )]);
-        match resolve_model(&cfg, "does-not-exist") {
+        match resolve_model(&cfg, "does-not-exist", None) {
             Err(ResolutionError::NotFound) => {}
             other => panic!("expected not found, got {:?}", other),
         }
@@ -211,12 +350,100 @@ mod tests {
             "images",
             vec![entry("together-image", "foo/bar")],
         )]);
-        match resolve_model(&cfg, "foo/bar").unwrap() {
+        match resolve_model(&cfg, "foo/bar", None).unwrap() {
             ResolvedTarget::Direct(e) => {
                 assert_eq!(e.provider, "together-image");
                 assert_eq!(e.model, "foo/bar");
             }
             _ => panic!("expected direct target via bare match"),
+        }
+    }
+
+    #[test]
+    fn bare_id_resolves_from_on_demand_cache() {
+        // A fetched model that is NOT in any tier still resolves via the cache.
+        let cfg = cfg_with_tiers(vec![]);
+        let cache = temp_cache();
+        cache.insert(
+            "opencode-zen".to_string(),
+            vec![xrouter_providers::RawModel {
+                id: "mimo-v2.5-free".into(),
+                name: None,
+            }],
+        );
+        match resolve_model(&cfg, "mimo-v2.5-free", Some(&cache)).unwrap() {
+            ResolvedTarget::Direct(e) => {
+                assert_eq!(e.provider, "opencode-zen");
+                assert_eq!(e.model, "mimo-v2.5-free");
+            }
+            _ => panic!("expected direct target from cache"),
+        }
+    }
+
+    #[test]
+    fn provider_prefixed_id_resolves_via_cache_when_prefix_not_a_provider() {
+        // OpenRouter-style id: `cohere/north-mini-code:free`. `cohere` is not a
+        // configured provider, but `openrouter` lists the full id in its cache.
+        let cfg = cfg_with_tiers(vec![]);
+        let cache = temp_cache();
+        cache.insert(
+            "openrouter".to_string(),
+            vec![xrouter_providers::RawModel {
+                id: "cohere/north-mini-code:free".into(),
+                name: None,
+            }],
+        );
+        match resolve_model(&cfg, "cohere/north-mini-code:free", Some(&cache)).unwrap() {
+            ResolvedTarget::Direct(e) => {
+                assert_eq!(e.provider, "openrouter");
+                assert_eq!(e.model, "cohere/north-mini-code:free");
+            }
+            _ => panic!("expected direct target via cache"),
+        }
+    }
+
+    #[test]
+    fn free_suffix_strip_fallback_resolves() {
+        // Cache stores the id WITHOUT the :free suffix; the user sends it WITH.
+        let cfg = cfg_with_tiers(vec![]);
+        let cache = temp_cache();
+        cache.insert(
+            "openrouter".to_string(),
+            vec![xrouter_providers::RawModel {
+                id: "cohere/north-mini-code".into(),
+                name: None,
+            }],
+        );
+        match resolve_model(&cfg, "cohere/north-mini-code:free", Some(&cache)).unwrap() {
+            ResolvedTarget::Direct(e) => {
+                assert_eq!(e.provider, "openrouter");
+                assert_eq!(e.model, "cohere/north-mini-code");
+            }
+            _ => panic!("expected direct target via :free strip"),
+        }
+    }
+
+    #[test]
+    fn cache_match_ambiguous_across_providers() {
+        let cfg = cfg_with_tiers(vec![]);
+        let cache = temp_cache();
+        cache.insert(
+            "opencode-zen".to_string(),
+            vec![xrouter_providers::RawModel {
+                id: "shared-model".into(),
+                name: None,
+            }],
+        );
+        cache.insert(
+            "openrouter".to_string(),
+            vec![xrouter_providers::RawModel {
+                id: "shared-model".into(),
+                name: None,
+            }],
+        );
+        match resolve_model(&cfg, "shared-model", Some(&cache)) {
+            Err(ResolutionError::Ambiguous(opts)) => assert_eq!(opts.len(), 2),
+            other => panic!("expected ambiguous, got {:?}", other),
         }
     }
 }

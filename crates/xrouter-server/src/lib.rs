@@ -267,34 +267,52 @@ async fn handle_models(State(state): State<AppState>) -> impl IntoResponse {
         models.push(json!({"id": t.name, "object": "model", "owned_by": "xrouter-tier"}));
     }
 
-    // Direct model addressing: expose every configured tier entry both as a
-    // `provider/model` id and — when the bare model id is unambiguous across
-    // providers — as a bare id alias.
-    let mut model_providers: std::collections::HashMap<String, std::collections::HashSet<String>> =
-        std::collections::HashMap::new();
+    // Collect every `(provider, model)` pair we can route to: tier entries plus
+    // the on-demand model cache for each configured provider. This lets clients
+    // (e.g. the Codex model picker) see every addressable id, including fetched
+    // models that live only in a provider's `/models` list and not in a tier.
+    let mut pairs: Vec<(String, String)> = Vec::new();
     for t in &cfg.tiers {
         for e in &t.entries {
-            model_providers
-                .entry(e.model.clone())
-                .or_default()
-                .insert(e.provider.clone());
+            pairs.push((e.provider.clone(), e.model.clone()));
         }
     }
-    for t in &cfg.tiers {
-        for e in &t.entries {
-            models.push(json!({
-                "id": format!("{}/{}", e.provider, e.model),
-                "object": "model",
-                "owned_by": e.provider
-            }));
-            // Bare id alias only when the model id maps to a single provider.
-            if model_providers.get(&e.model).map(|s| s.len()).unwrap_or(0) == 1 {
-                models.push(json!({
-                    "id": e.model.clone(),
-                    "object": "model",
-                    "owned_by": e.provider
-                }));
+    for (prov, pcfg) in &cfg.providers {
+        if !pcfg.enabled {
+            continue;
+        }
+        if let Some(ms) = state.model_cache.get_or_stale(prov) {
+            for m in ms {
+                pairs.push((prov.clone(), m.id.clone()));
             }
+        }
+    }
+    // De-duplicate (a tier entry and a cache entry may describe the same pair).
+    pairs.sort();
+    pairs.dedup();
+
+    // Bare-id alias uniqueness map across all known pairs.
+    let mut model_providers: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for (p, m) in &pairs {
+        model_providers
+            .entry(m.clone())
+            .or_default()
+            .insert(p.clone());
+    }
+    for (p, m) in &pairs {
+        models.push(json!({
+            "id": format!("{}/{}", p, m),
+            "object": "model",
+            "owned_by": p
+        }));
+        // Bare id alias only when the model id maps to a single provider.
+        if model_providers.get(m).map(|s| s.len()).unwrap_or(0) == 1 {
+            models.push(json!({
+                "id": m.clone(),
+                "object": "model",
+                "owned_by": p
+            }));
         }
     }
 
@@ -698,7 +716,7 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
     };
 
     let cfg = state.get_config();
-    let target = match resolve_model(cfg.as_ref(), &model_field) {
+    let target = match resolve_model(cfg.as_ref(), &model_field, Some(&state.model_cache)) {
         Ok(t) => t,
         Err(e) => {
             let available = cfg.tiers.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
@@ -1441,7 +1459,7 @@ async fn handle_images_generations(State(state): State<AppState>, headers: Heade
     };
 
     let cfg = state.get_config();
-    let target = match resolve_model(cfg.as_ref(), &model_field) {
+    let target = match resolve_model(cfg.as_ref(), &model_field, Some(&state.model_cache)) {
         Ok(t) => t,
         Err(e) => {
             let available = cfg.tiers.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
