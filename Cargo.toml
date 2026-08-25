@@ -38,3 +38,4 @@ wiremock = { version = "0.6.5" }
 tokio-stream = { version = "0.1.17" }
 hdrhistogram = { version = "7.5" }
 sysinfo = { version = "0.30" }
+rand = { version = "0.10" }

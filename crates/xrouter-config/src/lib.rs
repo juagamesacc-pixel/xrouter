@@ -140,6 +140,14 @@ impl Config {
 }
 
 pub fn config_path() -> PathBuf {
+    // Allow overriding the config location (used by tests and the CLI's
+    // `auth` subcommands so they can operate on a temp config without
+    // touching the real HOME). The wizard server honors the same variable.
+    if let Ok(p) = std::env::var("XROUTER_CONFIG") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".config/xrouter/config.toml")
 }

@@ -16,21 +16,37 @@
 ///   GET /api/models/fetch?provider=X
 ///                             -> server-side proxy to the provider's /models
 ///   GET /api/device/accounts  -> list stored device accounts
-///   POST /api/device/login    -> begin device login, returns code + uri
-///   POST /api/device/poll     -> poll until approved, then persist account
+///   POST /api/device/login    -> begin device login (kiro: code+uri; antigravity: auth_url)
+///   POST /api/device/poll     -> poll kiro until approved, then persist account
+///   GET  /oauth/callback      -> antigravity (Google) loopback PKCE callback
 ///   anything else             -> 404
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use xrouter_auth;
+
+/// Pending kiro device logins, keyed by `device_code`. The full
+/// [`xrouter_auth::DeviceLoginInit`] (which carries the dynamically-registered
+/// `client_id`/`client_secret` needed to poll the token endpoint) is kept
+/// server-side so it never reaches the browser.
+static KIRO_PENDING: OnceLock<Mutex<HashMap<String, xrouter_auth::DeviceLoginInit>>> =
+    OnceLock::new();
+
+/// Pending antigravity (Google) login: the full PKCE [`GoogleLoginInit`] (code
+/// verifier + redirect_uri + state) needed to complete the loopback callback
+/// exchange. Only one in flight at a time.
+static GOOGLE_PENDING: OnceLock<Mutex<Option<xrouter_auth::GoogleLoginInit>>> = OnceLock::new();
+
+/// Redirect URI the wizard's own loopback callback route listens on.
+const GOOGLE_REDIRECT_URI: &str = "http://localhost:3001/oauth/callback";
 
 // ── Config model (mirrors crates/xrouter-config schema) ──────────────────────
 
@@ -186,9 +202,8 @@ fn builtin_tiers() -> Vec<Tier> {
     ]
 }
 
-fn load_config() -> Config {
-    let path = config_path();
-    let mut cfg: Config = match std::fs::read_to_string(&path) {
+fn load_config_from(path: &std::path::Path) -> Config {
+    let mut cfg: Config = match std::fs::read_to_string(path) {
         Ok(s) => toml::from_str(&s).unwrap_or_default(),
         Err(_) => Config::default(),
     };
@@ -203,13 +218,135 @@ fn load_config() -> Config {
     cfg
 }
 
-fn save_config(cfg: &Config) -> std::io::Result<()> {
-    let path = config_path();
+fn load_config() -> Config {
+    load_config_from(&config_path())
+}
+
+fn save_config_to(cfg: &Config, path: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let toml = toml::to_string_pretty(cfg).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, toml)
+    // Atomic write: temp file + rename, with 0600 perms (same as xrouter-config).
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &toml)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(&tmp, perm);
+    }
+    std::fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(path, perm);
+    }
+    Ok(())
+}
+
+fn save_config(cfg: &Config) -> std::io::Result<()> {
+    save_config_to(cfg, &config_path())
+}
+
+/// Generate a secure router API key: `xr_` + 32 hex chars (16 random bytes).
+fn gen_router_key() -> String {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let n: u128 = rng.random();
+    format!("xr_{:032x}", n)
+}
+
+/// Re-read the just-written config from disk and compare it against what was
+/// requested. Returns the verification JSON payload on a match, or an error
+/// string describing the first mismatch. This guards against the
+/// "UI claims success but the file was never actually written" class of bug.
+fn verify_saved_config(requested: &Config, path: &std::path::Path) -> Result<Value, String> {
+    let on_disk_str = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not re-read saved config: {}", e))?;
+    let on_disk: Config = toml::from_str(&on_disk_str)
+        .map_err(|e| format!("saved config is not valid toml: {}", e))?;
+
+    // Providers: id, base_url, keys count, enabled.
+    let mut providers = serde_json::Map::new();
+    for (id, p) in &requested.providers {
+        let saved = on_disk
+            .providers
+            .get(id)
+            .ok_or_else(|| format!("provider '{}' missing after save", id))?;
+        if saved.base_url != p.base_url {
+            return Err(format!("provider '{}' base_url mismatch after save", id));
+        }
+        if saved.enabled != p.enabled {
+            return Err(format!("provider '{}' enabled flag mismatch after save", id));
+        }
+        if saved.keys.len() != p.keys.len() {
+            return Err(format!(
+                "provider '{}' key count mismatch after save (saved {}, expected {})",
+                id,
+                saved.keys.len(),
+                p.keys.len()
+            ));
+        }
+        providers.insert(
+            id.clone(),
+            serde_json::json!({
+                "keys": saved.keys.len(),
+                "enabled": saved.enabled,
+                "base_url": saved.base_url,
+            }),
+        );
+    }
+
+    // Tiers: names.
+    let mut req_tier_names: Vec<&String> = requested.tiers.iter().map(|t| &t.name).collect();
+    req_tier_names.sort();
+    let mut saved_tier_names: Vec<&String> = on_disk.tiers.iter().map(|t| &t.name).collect();
+    saved_tier_names.sort();
+    if req_tier_names != saved_tier_names {
+        return Err(format!(
+            "tier names mismatch after save (saved: {:?}, expected: {:?})",
+            saved_tier_names, req_tier_names
+        ));
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "verified": true,
+        "providers": providers,
+        "tiers": req_tier_names,
+    }))
+}
+
+/// Handle `POST /api/config`: validate, persist atomically, then re-read the
+/// file from disk and verify the save actually landed. Returns (json, status).
+fn post_config(body: &str, path: &std::path::Path) -> (String, String) {
+    match serde_json::from_str::<Config>(body) {
+        Ok(cfg) => {
+            if let Some(err) = validate_config(&cfg) {
+                (json_error(&err), "400 Bad Request".into())
+            } else {
+                match save_config_to(&cfg, path) {
+                    Ok(()) => match verify_saved_config(&cfg, path) {
+                        Ok(verified) => (verified.to_string(), "200 OK".into()),
+                        Err(e) => (
+                            serde_json::json!({ "ok": false, "error": format!("save verification failed: {}", e) }).to_string(),
+                            "500 Internal Server Error".into(),
+                        ),
+                    },
+                    Err(e) => (
+                        serde_json::json!({ "ok": false, "error": format!("save verification failed: write error: {}", e) }).to_string(),
+                        "500 Internal Server Error".into(),
+                    ),
+                }
+            }
+        }
+        Err(e) => (
+            json_error(&format!("invalid config json: {}", e)),
+            "400 Bad Request".into(),
+        ),
+    }
 }
 
 /// Validate a config before persisting. Tier names must match
@@ -398,9 +535,12 @@ fn device_base_url(provider: &str) -> String {
 }
 
 /// POST /api/device/login {provider}
-/// Begins a device authorization flow and returns the verification URI + user
-/// code (plus the device_code the UI must send to /api/device/poll). The
-/// account identity is derived automatically after the login completes — no
+/// Begins a login flow for the provider and returns what the UI needs:
+///   * `antigravity` (Google) — `{ auth_url }` (PKCE consent URL). The browser
+///     opens it; the loopback `GET /oauth/callback` completes the exchange.
+///   * `kiro` (AWS Builder ID) — `{ verification_uri, verification_uri_complete,
+///     user_code, device_code }` for the device-code poll flow.
+/// The account identity is derived automatically after the login completes — no
 /// manual `account_id` is requested.
 fn device_login(body: &str) -> (String, String) {
     let req: Value = match serde_json::from_str(body) {
@@ -425,16 +565,34 @@ fn device_login(body: &str) -> (String, String) {
             "400 Bad Request".into(),
         );
     }
-    // No manual account id — identity is derived from the signed-in provider
-    // account after the device login completes.
-    match rt().block_on(xrouter_auth::initiate_device_login(
-        &prov_name,
-        "",
-        "",
-    )) {
+
+    if prov_name == "antigravity" {
+        // PKCE browser flow: build the consent URL and stash the verifier
+        // server-side for the /oauth/callback exchange.
+        let init = xrouter_auth::build_google_auth_url(GOOGLE_REDIRECT_URI);
+        *GOOGLE_PENDING
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(init.clone());
+        let resp = serde_json::json!({
+            "auth_url": init.auth_url,
+            "provider": "antigravity",
+        });
+        return (resp.to_string(), "200 OK".into());
+    }
+
+    // kiro (and any future device-code provider): start the device flow.
+    match rt().block_on(xrouter_auth::initiate_device_login(&prov_name, "", "")) {
         Ok(init) => {
+            let device_code = init.device_code.clone();
+            KIRO_PENDING
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap()
+                .insert(device_code.clone(), init.clone());
             let resp = serde_json::json!({
                 "verification_uri": init.verification_uri,
+                "verification_uri_complete": init.verification_uri_complete,
                 "user_code": init.user_code,
                 "device_code": init.device_code,
                 "provider": init.provider,
@@ -448,10 +606,11 @@ fn device_login(body: &str) -> (String, String) {
     }
 }
 
-/// POST /api/device/poll {provider, device_code, poll_token?}
+/// POST /api/device/poll {provider, device_code}
 /// Polls (blocking, up to the provider's timeout) until the user approves the
 /// device login, then persists the account to the off-RAM device store and to
-/// the config (metadata only, no secrets).
+/// the config (metadata only, no secrets). Used by the kiro device-code flow;
+/// antigravity completes via the loopback `GET /oauth/callback` instead.
 fn device_poll(body: &str) -> (String, String) {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -474,14 +633,25 @@ fn device_poll(body: &str) -> (String, String) {
         );
     }
     let prov_name = xrouter_auth::normalize_provider(&provider).to_string();
-    let init = xrouter_auth::DeviceLoginInit {
-        provider: prov_name.clone(),
-        account: String::new(),
-        display: String::new(),
-        device_code: device_code.clone(),
-        user_code: String::new(),
-        verification_uri: String::new(),
-        interval: 5,
+    if prov_name == "antigravity" {
+        return (
+            json_error("antigravity completes via the browser callback, not polling"),
+            "400 Bad Request".into(),
+        );
+    }
+    let init = match KIRO_PENDING
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .remove(&device_code)
+    {
+        Some(i) => i,
+        None => {
+            return (
+                json_error("no pending device login for that device_code"),
+                "400 Bad Request".into(),
+            )
+        }
     };
     match rt().block_on(xrouter_auth::poll_device_login(&init)) {
         Ok(acct) => {
@@ -511,6 +681,103 @@ fn device_poll(body: &str) -> (String, String) {
             "502 Bad Gateway".into(),
         ),
     }
+}
+
+/// GET /oauth/callback?code=...&state=...  (antigravity / Google loopback)
+/// Completes the PKCE exchange using the server-side-stashed verifier, persists
+/// the account, and returns a tiny HTML page telling the user they can close
+/// the tab.
+fn device_oauth_callback(query: &str) -> (String, String) {
+    let params: HashMap<String, String> = query
+        .split('&')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            Some((k.to_string(), url_decode(v)))
+        })
+        .collect();
+    let code = params.get("code").cloned().unwrap_or_default();
+    let err = params.get("error").cloned().unwrap_or_default();
+    let pending = GOOGLE_PENDING
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .take();
+    let pending = match pending {
+        Some(p) => p,
+        None => {
+            return (
+                html_page("Login failed", "No pending Google login session was found. Restart the login from the wizard."),
+                "400 Bad Request".into(),
+            )
+        }
+    };
+    if !err.is_empty() {
+        return (
+            html_page("Login failed", &format!("Google returned an error: {}", err)),
+            "400 Bad Request".into(),
+        );
+    }
+    if code.is_empty() {
+        return (
+            html_page("Login failed", "Missing authorization code in the callback."),
+            "400 Bad Request".into(),
+        );
+    }
+    match rt().block_on(xrouter_auth::complete_google_login(&pending, &code)) {
+        Ok(acct) => {
+            let mut store = xrouter_auth::DeviceStore::load()
+                .unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
+            store.add_account(acct.clone());
+            if let Err(e) = store.save() {
+                return (
+                    html_page("Login failed", &format!("Failed to save account: {}", e)),
+                    "500 Internal Server Error".into(),
+                );
+            }
+            save_device_account_to_config("antigravity", &acct);
+            (
+                html_page(
+                    "Login complete",
+                    &format!(
+                        "Connected as <strong>{}</strong>.<br>You can close this tab and return to the wizard.",
+                        esc_html(&acct.account_id)
+                    ),
+                ),
+                "200 OK".into(),
+            )
+        }
+        Err(e) => (
+            html_page("Login failed", &format!("Token exchange failed: {}", e)),
+            "502 Bad Gateway".into(),
+        ),
+    }
+}
+
+/// Build a minimal, self-contained HTML page for the OAuth callback.
+fn html_page(title: &str, body: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>{}</title>\
+         <style>body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;\
+         background:#0f1117;color:#e6e6e6;display:flex;min-height:100vh;\
+         align-items:center;justify-content:center;margin:0}}div{{max-width:420px;\
+         text-align:center;padding:32px;border:1px solid #2a2f3a;border-radius:14px;\
+         background:#161a22}}h1{{font-size:1.3rem;margin:0 0 12px}}p{{color:#aab;\
+         line-height:1.5;margin:0}}</style></head>\
+         <body><div><h1>{}</h1><p>{}</p></div></body></html>",
+        esc_html(title),
+        esc_html(title),
+        body
+    )
+}
+
+/// Minimal HTML-escape for text injected into the callback page.
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Record the (non-secret) device account metadata in the main config so the
@@ -573,6 +840,60 @@ fn device_accounts() -> (String, String) {
         serde_json::json!({ "accounts": accounts }).to_string(),
         "200 OK".into(),
     )
+}
+
+// ── Router access (API key) ───────────────────────────────────────────────────
+//
+// These operate on the SAME config.toml the rest of the wizard manages
+// (atomic 0600 write via `save_config`). They let the web UI enable/disable the
+// router's own Bearer-token auth without dropping the rest of the config.
+
+/// GET /api/auth/status -> { "enabled": bool }
+fn auth_status() -> (String, String) {
+    let cfg = load_config();
+    let enabled = cfg
+        .settings
+        .api_token
+        .as_ref()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
+    (
+        serde_json::json!({ "enabled": enabled }).to_string(),
+        "200 OK".into(),
+    )
+}
+
+/// POST /api/auth/enable -> generates a key, persists it, returns { "token" }
+fn auth_enable() -> (String, String) {
+    let mut cfg = load_config();
+    let token = gen_router_key();
+    cfg.settings.api_token = Some(token.clone());
+    match save_config(&cfg) {
+        Ok(()) => (
+            serde_json::json!({ "token": token }).to_string(),
+            "200 OK".into(),
+        ),
+        Err(e) => (
+            json_error(&format!("failed to save config: {}", e)),
+            "500 Internal Server Error".into(),
+        ),
+    }
+}
+
+/// POST /api/auth/disable -> removes the key, returns { "ok": true }
+fn auth_disable() -> (String, String) {
+    let mut cfg = load_config();
+    cfg.settings.api_token = None;
+    match save_config(&cfg) {
+        Ok(()) => (
+            serde_json::json!({ "ok": true }).to_string(),
+            "200 OK".into(),
+        ),
+        Err(e) => (
+            json_error(&format!("failed to save config: {}", e)),
+            "500 Internal Server Error".into(),
+        ),
+    }
 }
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
@@ -642,39 +963,10 @@ fn handle(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
             let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".into());
             respond(stream, &json, "200 OK", "application/json")
         }
-        ("POST", "/api/config") => match serde_json::from_str::<Config>(&body) {
-            Ok(cfg) => {
-                if let Some(err) = validate_config(&cfg) {
-                    respond(
-                        stream,
-                        &json_error(&err),
-                        "400 Bad Request",
-                        "application/json",
-                    )
-                } else {
-                    match save_config(&cfg) {
-                        Ok(()) => respond(
-                            stream,
-                            &serde_json::json!({ "ok": true }).to_string(),
-                            "200 OK",
-                            "application/json",
-                        ),
-                        Err(e) => respond(
-                            stream,
-                            &json_error(&format!("failed to save config: {}", e)),
-                            "500 Internal Server Error",
-                            "application/json",
-                        ),
-                    }
-                }
-            }
-            Err(e) => respond(
-                stream,
-                &json_error(&format!("invalid config json: {}", e)),
-                "400 Bad Request",
-                "application/json",
-            ),
-        },
+        ("POST", "/api/config") => {
+            let (json, status) = post_config(&body, &config_path());
+            respond(stream, &json, &status, "application/json")
+        }
         ("GET", "/api/models/fetch") => {
             let provider = query
                 .split('&')
@@ -694,12 +986,28 @@ fn handle(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
             let (json, status) = device_accounts();
             respond(stream, &json, &status, "application/json")
         }
+        ("GET", "/oauth/callback") => {
+            let (html, status) = device_oauth_callback(&query);
+            respond(stream, &html, &status, "text/html; charset=utf-8")
+        }
         ("POST", "/api/device/login") => {
             let (json, status) = device_login(&body);
             respond(stream, &json, &status, "application/json")
         }
         ("POST", "/api/device/poll") => {
             let (json, status) = device_poll(&body);
+            respond(stream, &json, &status, "application/json")
+        }
+        ("GET", "/api/auth/status") => {
+            let (json, status) = auth_status();
+            respond(stream, &json, &status, "application/json")
+        }
+        ("POST", "/api/auth/enable") => {
+            let (json, status) = auth_enable();
+            respond(stream, &json, &status, "application/json")
+        }
+        ("POST", "/api/auth/disable") => {
+            let (json, status) = auth_disable();
             respond(stream, &json, &status, "application/json")
         }
         _ => respond(stream, "<h1>404 Not Found</h1>", "404 Not Found", "text/html"),
@@ -721,4 +1029,171 @@ fn respond(
     );
     stream.write_all(resp.as_bytes())?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod persist_integration_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A unique temp config path (does NOT touch XROUTER_CONFIG so tests stay
+    /// parallel-safe).
+    fn tmp_config_path() -> std::path::PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("xr_wiz_persist_{}_{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.toml")
+    }
+
+    #[test]
+    fn post_new_tier_persists_and_coexists_with_builtins() {
+        let p = tmp_config_path();
+        let _ = std::fs::remove_file(&p);
+
+        // Simulate the exact JSON body the wizard frontend sends for a new
+        // custom tier (POST /api/config handler deserializes this into Config).
+        let body = serde_json::json!({
+            "settings": {"default_tier": null},
+            "providers": {
+                "opencode-zen": {"kind":"openai-compat","base_url":"https://opencode.ai/zen/v1","enabled":true,"keys":[],"quota_ban_secs":300}
+            },
+            "tiers": [{
+                "name":"user-tier","strict":true,"default_entry":0,
+                "entries":[{"provider":"opencode-zen","model":"big-pickle","is_default":true,"weight":1,"endpoint_id":""}]
+            }]
+        })
+        .to_string();
+
+        let cfg: Config = serde_json::from_str(&body).expect("deserialize posted config");
+        assert!(validate_config(&cfg).is_none(), "valid config must pass validation");
+        save_config_to(&cfg, &p).expect("save must succeed");
+
+        // GET equivalent: load_config merges builtins into whatever was saved.
+        let loaded = load_config_from(&p);
+        let names: Vec<&str> = loaded.tiers.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"user-tier"), "custom tier must persist: {:?}", names);
+        assert!(names.contains(&"big-pickle"), "builtin big-pickle must coexist");
+        assert!(names.contains(&"images"), "builtin images must coexist");
+
+        // File on disk must contain the custom tier.
+        let on_disk = std::fs::read_to_string(&p).expect("read saved file");
+        assert!(on_disk.contains("user-tier"), "saved file must contain custom tier");
+        assert!(on_disk.contains("big-pickle"), "saved file must contain builtin tier");
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invalid_tier_name_is_rejected_by_validation() {
+        let body = serde_json::json!({
+            "settings": {"default_tier": null},
+            "providers": {},
+            "tiers": [{"name":"bad name!", "strict":true,"default_entry":0,"entries":[]}]
+        })
+        .to_string();
+        let cfg: Config = serde_json::from_str(&body).unwrap();
+        let err = validate_config(&cfg);
+        assert!(err.is_some(), "invalid tier name must be rejected");
+        assert!(err.unwrap().contains("invalid tier name"), "error should mention tier name");
+    }
+
+    #[test]
+    fn empty_provider_or_model_entry_is_rejected() {
+        let body = serde_json::json!({
+            "settings": {"default_tier": null},
+            "providers": {},
+            "tiers": [{"name":"t","strict":true,"default_entry":0,"entries":[{"provider":"","model":"x","is_default":true,"weight":1,"endpoint_id":""}]}]
+        })
+        .to_string();
+        let cfg: Config = serde_json::from_str(&body).unwrap();
+        assert!(validate_config(&cfg).is_some(), "empty provider entry must be rejected");
+    }
+
+    #[test]
+    fn post_config_with_key_verifies_and_persists() {
+        let p = tmp_config_path();
+        let _ = std::fs::remove_file(&p);
+
+        let body = serde_json::json!({
+            "settings": {"default_tier": null, "api_token": null},
+            "providers": {
+                "opencode-zen": {
+                    "kind": "openai-compat",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "enabled": true,
+                    "keys": ["sk-secret-123"],
+                    "quota_ban_secs": 300
+                }
+            },
+            "tiers": [{
+                "name": "big-pickle", "strict": true, "default_entry": 0,
+                "entries": [{"provider":"opencode-zen","model":"big-pickle","is_default":true,"weight":1,"endpoint_id":""}]
+            }]
+        })
+        .to_string();
+
+        let (json, status) = post_config(&body, &p);
+        assert_eq!(status, "200 OK", "expected 200, got {}", status);
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], true, "ok must be true: {}", json);
+        assert_eq!(v["verified"], true, "verified must be true: {}", json);
+        assert_eq!(v["providers"]["opencode-zen"]["keys"], 1, "key count must be 1: {}", json);
+        assert_eq!(v["providers"]["opencode-zen"]["enabled"], true);
+        assert!(v["tiers"].as_array().unwrap().contains(&serde_json::json!("big-pickle")));
+
+        // The file on disk must actually contain the key (the bug we guard against).
+        let on_disk = std::fs::read_to_string(&p).expect("read saved file");
+        assert!(on_disk.contains("sk-secret-123"), "key must be persisted to disk: {}", on_disk);
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn post_config_write_failure_reports_unverified() {
+        let dir = std::env::temp_dir().join(format!(
+            "xr_notdir_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        // Make `dir` a regular FILE so that the config path `dir/config.toml`
+        // has a parent that cannot be a directory. The atomic write then fails
+        // reliably — this works even when running as root, which bypasses
+        // read-only *directory* permissions.
+        std::fs::write(&dir, b"not a directory").unwrap();
+        let p = dir.join("config.toml");
+
+        let body = serde_json::json!({
+            "settings": {"default_tier": null},
+            "providers": {
+                "opencode-zen": {
+                    "kind": "openai-compat",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "enabled": true,
+                    "keys": ["k"],
+                    "quota_ban_secs": 300
+                }
+            },
+            "tiers": []
+        })
+        .to_string();
+
+        let (json, status) = post_config(&body, &p);
+        assert_eq!(
+            status, "500 Internal Server Error",
+            "write failure must yield 500, got {} ({})",
+            status, json
+        );
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], false, "ok must be false on write failure: {}", json);
+        let err = v["error"].as_str().expect("error string").to_string();
+        assert!(
+            err.contains("save verification failed"),
+            "error must mention save verification failed: {}",
+            err
+        );
+
+        let _ = std::fs::remove_file(&dir);
+    }
 }

@@ -1,6 +1,9 @@
 pub mod translate;
 pub mod metrics;
 pub mod track;
+pub mod resolve;
+
+use crate::resolve::{resolve_model, ResolutionError, ResolvedTarget};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -257,7 +260,44 @@ async fn handle_healthz() -> impl IntoResponse { (StatusCode::OK, Json(json!({"s
 
 async fn handle_models(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.get_config();
-    let models: Vec<Value> = cfg.tiers.iter().map(|t| json!({"id": t.name, "object":"model","owned_by":"xrouter"} )).collect();
+    let mut models: Vec<Value> = Vec::new();
+
+    // Tier names, listed as-is so clients can still address tiers directly.
+    for t in &cfg.tiers {
+        models.push(json!({"id": t.name, "object": "model", "owned_by": "xrouter-tier"}));
+    }
+
+    // Direct model addressing: expose every configured tier entry both as a
+    // `provider/model` id and — when the bare model id is unambiguous across
+    // providers — as a bare id alias.
+    let mut model_providers: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for t in &cfg.tiers {
+        for e in &t.entries {
+            model_providers
+                .entry(e.model.clone())
+                .or_default()
+                .insert(e.provider.clone());
+        }
+    }
+    for t in &cfg.tiers {
+        for e in &t.entries {
+            models.push(json!({
+                "id": format!("{}/{}", e.provider, e.model),
+                "object": "model",
+                "owned_by": e.provider
+            }));
+            // Bare id alias only when the model id maps to a single provider.
+            if model_providers.get(&e.model).map(|s| s.len()).unwrap_or(0) == 1 {
+                models.push(json!({
+                    "id": e.model.clone(),
+                    "object": "model",
+                    "owned_by": e.provider
+                }));
+            }
+        }
+    }
+
     Json(json!({"object":"list","data": models}))
 }
 
@@ -514,6 +554,66 @@ fn extract_tier_name(body: &Value) -> Option<String> {
     body.get("model").and_then(|m| m.as_str()).map(|s| s.to_string())
 }
 
+/// Build the HTTP response for a model-resolution failure, preserving the
+/// ingress-specific error schema (Anthropic vs OpenAI).
+fn resolution_error_response(
+    err: &ResolutionError,
+    model: &str,
+    available: &[String],
+    is_anthropic_ingress: bool,
+) -> Response {
+    match err {
+        ResolutionError::Ambiguous(opts) => {
+            let options: Vec<String> = opts.iter().map(|(p, m)| format!("{}/{}", p, m)).collect();
+            let msg = format!(
+                "model id '{}' is ambiguous across multiple providers; disambiguate using the 'provider/model' format. Options: {}",
+                model,
+                options.join(", ")
+            );
+            if is_anthropic_ingress {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"type":"error","error":{"type":"invalid_request_error","message": msg, "options": options}})),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":{"type":"ambiguous_model","message": msg, "options": options}})),
+                )
+                    .into_response()
+            }
+        }
+        ResolutionError::NotFound => {
+            let hint = format!(
+                "unknown model/tier '{}'. Address a model directly with the 'provider/model' format (e.g. 'opencode-zen/mimo-v2.5-free') or use a bare model id configured in a tier. Known tiers: {}",
+                model,
+                available.join(", ")
+            );
+            if is_anthropic_ingress {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"type":"error","error":{"type":"not_found_error","message": hint}})),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": {
+                            "type": "unknown_tier",
+                            "tier": model,
+                            "available": available,
+                            "message": hint
+                        }
+                    })),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
 /// Record a single tracked request (no-op when tracking is disabled).
 fn record_track(
     tracker: &Tracker,
@@ -583,7 +683,7 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
         return resp;
     }
 
-    let tier_name = match extract_tier_name(&body) {
+    let model_field = match extract_tier_name(&body) {
         Some(n) => n,
         None => {
             let err = if is_anthropic_ingress {
@@ -598,24 +698,39 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
     };
 
     let cfg = state.get_config();
-    let tier = match cfg.tiers.iter().find(|t| t.name == tier_name) {
-        Some(t) => t.clone(),
-        None => {
+    let target = match resolve_model(cfg.as_ref(), &model_field) {
+        Ok(t) => t,
+        Err(e) => {
             let available = cfg.tiers.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
-            let body_json = if is_anthropic_ingress {
-                json!({"type":"error","error":{"type":"not_found_error","message": format!("unknown tier '{}'", tier_name)}})
-            } else {
-                xrouter_core::unknown_tier_body(&tier_name, &available)
-            };
             state.metrics.inc_error();
-            record_track(&state.tracker, &tier_name, "", "", false, 404, start.elapsed().as_millis() as u64);
-            return (StatusCode::NOT_FOUND, Json(body_json)).into_response();
+            record_track(&state.tracker, &model_field, "", "", false, 404, start.elapsed().as_millis() as u64);
+            return resolution_error_response(&e, &model_field, &available, is_anthropic_ingress);
         }
+    };
+
+    // `tier_name` is used for metrics/error reporting. For a direct model
+    // address we report the original `model` field; for a tier we report the
+    // tier name.
+    let tier_name = match &target {
+        ResolvedTarget::Tier(t) => t.name.clone(),
+        ResolvedTarget::Direct(_) => model_field.clone(),
     };
 
     let streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let candidates = state.balancer.candidates_ordered(&tier);
+    // For a direct model address we build a single-candidate synthetic tier so
+    // the existing failover loop routes straight to that endpoint with no
+    // cross-model failover (retries only rotate keys / apply quota-bans).
+    let synthetic = match &target {
+        ResolvedTarget::Direct(e) => Some(xrouter_core::Tier::new("__direct__", vec![e.clone()])),
+        ResolvedTarget::Tier(_) => None,
+    };
+    let candidates: Vec<&xrouter_core::ModelEntry> = match &target {
+        ResolvedTarget::Tier(t) => state.balancer.candidates_ordered(t),
+        ResolvedTarget::Direct(_) => {
+            state.balancer.candidates_ordered(synthetic.as_ref().unwrap())
+        }
+    };
     if candidates.is_empty() {
         state.metrics.inc_tier_exhausted();
         let body_json = if is_anthropic_ingress {
@@ -801,7 +916,7 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
                 };
                 // For Responses ingress, map Chat-Completions SSE -> Responses SSE.
                 let stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> = if is_responses_ingress {
-                    responses_stream_map(inner)
+                    responses_stream_map(inner, model_field.clone())
                 } else {
                     inner
                 };
@@ -1066,7 +1181,6 @@ struct ResponsesStreamTranslator {
     started: bool,
     finished: bool,
     response_id: String,
-    item_id: String,
     model: String,
     text: String,
     usage_in: u64,
@@ -1075,17 +1189,12 @@ struct ResponsesStreamTranslator {
 }
 
 impl ResponsesStreamTranslator {
-    fn new() -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+    fn new(model: String) -> Self {
         Self {
             started: false,
             finished: false,
-            response_id: format!("resp_{}", nanos),
-            item_id: format!("item_{}", nanos),
-            model: "unknown".to_string(),
+            response_id: translate::gen_response_id(),
+            model,
             text: String::new(),
             usage_in: 0,
             usage_out: 0,
@@ -1112,9 +1221,6 @@ impl ResponsesStreamTranslator {
                 let data = line.trim_start_matches("data: ").trim();
                 if data == "[DONE]" { continue; }
                 if let Ok(v) = serde_json::from_str::<Value>(data) {
-                    if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
-                        if self.model == "unknown" { self.model = m.to_string(); }
-                    }
                     if let Some(content) = v.get("choices")
                         .and_then(|c| c.as_array())
                         .and_then(|a| a.first())
@@ -1124,12 +1230,10 @@ impl ResponsesStreamTranslator {
                     {
                         if !content.is_empty() {
                             self.text.push_str(content);
+                            // Exact Codex-expected delta shape: only type + delta.
                             let delta = json!({
                                 "type": "response.output_text.delta",
-                                "delta": content,
-                                "item_id": self.item_id,
-                                "output_index": 0,
-                                "content_index": 0
+                                "delta": content
                             });
                             if let Ok(s) = serde_json::to_string(&delta) {
                                 out.push_str(&format!("event: response.output_text.delta\ndata: {}\n\n", s));
@@ -1185,8 +1289,9 @@ impl ResponsesStreamTranslator {
 /// Wrap a Chat-Completions SSE stream into a Responses API SSE stream.
 fn responses_stream_map(
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    model: String,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> {
-    let translator = ResponsesStreamTranslator::new();
+    let translator = ResponsesStreamTranslator::new(model);
     Box::pin(futures::stream::unfold((inner, translator, false), move |(mut inner, mut translator, flushed)| async move {
         if flushed {
             return None;
@@ -1322,7 +1427,7 @@ async fn handle_images_generations(State(state): State<AppState>, headers: Heade
             .into_response();
     }
 
-    let tier_name = match extract_tier_name(&val) {
+    let model_field = match extract_tier_name(&val) {
         Some(n) => n,
         None => {
             state.metrics.inc_error();
@@ -1336,17 +1441,31 @@ async fn handle_images_generations(State(state): State<AppState>, headers: Heade
     };
 
     let cfg = state.get_config();
-    let tier = match cfg.tiers.iter().find(|t| t.name == tier_name) {
-        Some(t) => t.clone(),
-        None => {
+    let target = match resolve_model(cfg.as_ref(), &model_field) {
+        Ok(t) => t,
+        Err(e) => {
             let available = cfg.tiers.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
             state.metrics.inc_error();
-            record_track(&state.tracker, &tier_name, "", "", false, 404, start.elapsed().as_millis() as u64);
-            return (StatusCode::NOT_FOUND, Json(xrouter_core::unknown_tier_body(&tier_name, &available))).into_response();
+            record_track(&state.tracker, &model_field, "", "", false, 404, start.elapsed().as_millis() as u64);
+            return resolution_error_response(&e, &model_field, &available, false);
         }
     };
 
-    let candidates = state.balancer.candidates_ordered(&tier);
+    let tier_name = match &target {
+        ResolvedTarget::Tier(t) => t.name.clone(),
+        ResolvedTarget::Direct(_) => model_field.clone(),
+    };
+
+    // For a direct model address, build a single-candidate synthetic tier so
+    // the existing failover loop routes straight to that endpoint.
+    let synthetic = match &target {
+        ResolvedTarget::Direct(e) => Some(xrouter_core::Tier::new("__direct__", vec![e.clone()])),
+        ResolvedTarget::Tier(_) => None,
+    };
+    let candidates = match &target {
+        ResolvedTarget::Tier(t) => state.balancer.candidates_ordered(t),
+        ResolvedTarget::Direct(_) => state.balancer.candidates_ordered(synthetic.as_ref().unwrap()),
+    };
     if candidates.is_empty() {
         state.metrics.inc_tier_exhausted();
         let body_json = xrouter_core::tier_exhausted_body(&tier_name);
@@ -1613,4 +1732,269 @@ pub async fn run_server_simple(addr: String, state: AppState) -> anyhow::Result<
     info!("listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod responses_stream_tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn streaming_emits_exact_responses_events() {
+        // Simulate a Chat-Completions SSE stream: role, two content deltas, then
+        // a final chunk carrying usage, then [DONE].
+        let chunks = [
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n",
+            "data: [DONE]\n\n",
+        ];
+        let items: Vec<Result<Bytes, reqwest::Error>> = chunks
+            .iter()
+            .map(|c| Ok::<_, reqwest::Error>(Bytes::copy_from_slice(c.as_bytes())))
+            .collect();
+        let inner = futures::stream::iter(items);
+        let mut stream = responses_stream_map(Box::pin(inner), "tier-fast".to_string());
+
+        let mut collected = String::new();
+        while let Some(res) = stream.next().await {
+            collected.push_str(&String::from_utf8_lossy(&res.unwrap()));
+        }
+
+        // Must contain the three event types.
+        assert!(collected.contains("event: response.created"), "missing response.created");
+        assert!(collected.contains("event: response.output_text.delta"), "missing delta");
+        assert!(collected.contains("event: response.completed"), "missing response.completed");
+
+        // The completed event must be EXACTLY the Codex-expected shape.
+        let completed_pos = collected.find("event: response.completed").unwrap();
+        let after = &collected[completed_pos..];
+        let data_line = after.lines().find(|l| l.starts_with("data: ")).unwrap();
+        let data = data_line.trim_start_matches("data: ").trim();
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert_eq!(v["type"], "response.completed");
+        // Top-level data payload must contain EXACTLY `type` and `response`
+        // (no extra keys like `sequence_number`, `id`, etc.).
+        let mut top_keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        top_keys.sort();
+        assert_eq!(
+            top_keys,
+            vec!["response", "type"],
+            "response.completed data payload must have exactly type+response"
+        );
+        let r = &v["response"];
+        assert_eq!(r["object"], "response");
+        assert_eq!(r["status"], "completed");
+        assert_eq!(r["model"], "tier-fast");
+        assert_eq!(r["output"][0]["type"], "message");
+        assert_eq!(r["output"][0]["role"], "assistant");
+        assert_eq!(r["output"][0]["content"][0]["type"], "output_text");
+        assert_eq!(r["output"][0]["content"][0]["text"], "Hello");
+        assert_eq!(r["usage"]["input_tokens"], 7);
+        assert_eq!(r["usage"]["output_tokens"], 3);
+        assert_eq!(r["usage"]["total_tokens"], 10);
+        // id must be resp_ + 32 hex.
+        let id = r["id"].as_str().unwrap();
+        assert!(id.starts_with("resp_"));
+        assert_eq!(id.len(), "resp_".len() + 32);
+        // No chat.completion leakage in the completed event.
+        assert!(!data.contains("\"choices\""));
+        assert!(!data.contains("\"finish_reason\""));
+
+        // The delta events must be the exact minimal shape.
+        let delta_pos = collected.find("event: response.output_text.delta").unwrap();
+        let dline = collected[delta_pos..].lines().find(|l| l.starts_with("data: ")).unwrap();
+        let ddata = dline.trim_start_matches("data: ").trim();
+        let dv: serde_json::Value = serde_json::from_str(ddata).unwrap();
+        assert_eq!(dv["type"], "response.output_text.delta");
+        assert_eq!(dv["delta"], "Hel");
+        assert!(dv.get("item_id").is_none());
+        assert!(dv.get("output_index").is_none());
+    }
+}
+
+#[cfg(test)]
+mod auth_enforcement_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use axum::http::Request;
+    use tower::ServiceExt; // for `oneshot`
+    use xrouter_config::{Config, ProviderConfig, Settings};
+    use xrouter_core::{EndpointId, ModelEntry, Tier};
+
+    /// Build a config with auth enabled (api_token set) and a single tier that
+    /// routes to a provider pointing at a dead local address (so a *successful*
+    /// auth request fails at the upstream layer with a non-401 status, never
+    /// with 401). This lets us distinguish "auth rejected" from "auth passed but
+    /// upstream failed".
+    fn authed_config() -> Config {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "opencode-zen".to_string(),
+            ProviderConfig {
+                kind: "openai-compat".into(),
+                base_url: "http://127.0.0.1:9/v1".into(), // dead port → fast conn-refused
+                enabled: true,
+                keys: vec!["sk-test-key".into()],
+                quota_ban_secs: 300,
+                accounts: vec![],
+            },
+        );
+        let tiers = vec![Tier {
+            name: "fast".into(),
+            strict: true,
+            default_entry: 0,
+            entries: vec![ModelEntry {
+                provider: "opencode-zen".into(),
+                model: "big-pickle".into(),
+                is_default: true,
+                weight: 1,
+                endpoint_id: EndpointId::new("opencode-zen", "big-pickle"),
+            }],
+        }];
+        Config {
+            settings: Settings {
+                default_tier: Some("fast".into()),
+                api_token: Some("secret-token".into()),
+            },
+            providers,
+            tiers,
+        }
+    }
+
+    fn app() -> Router {
+        let state = AppState::new(authed_config());
+        create_router(state)
+    }
+
+    async fn status_of(req: Request<Body>) -> StatusCode {
+        app().oneshot(req).await.unwrap().status()
+    }
+
+    fn post(path: &str, body: &str, token: Option<&str>) -> Request<Body> {
+        let mut b = Request::builder().method("POST").uri(path);
+        if let Some(t) = token {
+            b = b.header("Authorization", format!("Bearer {}", t));
+        }
+        b.header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn get(path: &str, token: Option<&str>) -> Request<Body> {
+        let mut b = Request::builder().method("GET").uri(path);
+        if let Some(t) = token {
+            b = b.header("Authorization", format!("Bearer {}", t));
+        }
+        b.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn chat_requires_bearer() {
+        let no_auth = post(
+            "/v1/chat/completions",
+            r#"{"model":"fast","messages":[]}"#,
+            None,
+        );
+        assert_eq!(status_of(no_auth).await, StatusCode::UNAUTHORIZED);
+
+        let good = post(
+            "/v1/chat/completions",
+            r#"{"model":"fast","messages":[]}"#,
+            Some("secret-token"),
+        );
+        let s = status_of(good).await;
+        assert_ne!(s, StatusCode::UNAUTHORIZED, "valid token must pass auth");
+
+        let bad = post(
+            "/v1/chat/completions",
+            r#"{"model":"fast","messages":[]}"#,
+            Some("wrong-token"),
+        );
+        assert_eq!(status_of(bad).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn responses_requires_bearer() {
+        let no_auth = post("/v1/responses", r#"{"model":"fast","input":"hi"}"#, None);
+        assert_eq!(status_of(no_auth).await, StatusCode::UNAUTHORIZED);
+
+        let good = post(
+            "/v1/responses",
+            r#"{"model":"fast","input":"hi"}"#,
+            Some("secret-token"),
+        );
+        assert_ne!(status_of(good).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn images_requires_bearer() {
+        let no_auth = post(
+            "/v1/images/generations",
+            r#"{"model":"fast","prompt":"a cat"}"#,
+            None,
+        );
+        assert_eq!(status_of(no_auth).await, StatusCode::UNAUTHORIZED);
+
+        let good = post(
+            "/v1/images/generations",
+            r#"{"model":"fast","prompt":"a cat"}"#,
+            Some("secret-token"),
+        );
+        assert_ne!(status_of(good).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_requires_bearer_except_healthz() {
+        // /admin/tiers requires auth.
+        assert_eq!(
+            status_of(get("/admin/tiers", None)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_of(get("/admin/tiers", Some("secret-token"))).await,
+            StatusCode::OK
+        );
+
+        // /admin/models requires auth.
+        assert_eq!(
+            status_of(get("/admin/models", None)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_of(get("/admin/models", Some("secret-token"))).await,
+            StatusCode::OK
+        );
+
+        // /healthz is open even with auth enabled.
+        assert_eq!(
+            status_of(get("/healthz", None)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status_of(get("/healthz", Some("secret-token"))).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn open_access_when_no_token_configured() {
+        // With no api_token set, every route is open (no 401).
+        let mut cfg = authed_config();
+        cfg.settings.api_token = None;
+        let state = AppState::new(cfg);
+        let router = create_router(state);
+
+        for path in [
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/images/generations",
+            "/admin/tiers",
+        ] {
+            let req = post(path, r#"{"model":"fast","messages":[]}"#, None);
+            let s = router.clone().oneshot(req).await.unwrap().status();
+            assert_ne!(s, StatusCode::UNAUTHORIZED, "{} must be open", path);
+        }
+    }
 }

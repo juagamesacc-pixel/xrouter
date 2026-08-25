@@ -166,14 +166,17 @@ input::placeholder{color:var(--fg3)}
 .custom-select .select-trigger .placeholder{color:var(--fg3)}
 .custom-select .dropdown-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;
   background:rgba(16,16,24,.96);backdrop-filter:blur(20px);border:1px solid var(--border2);
-  border-radius:var(--radius-xs);box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:50;
+  border-radius:var(--radius-xs);box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:5000;
   max-height:240px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bg4) transparent;
   display:none;animation:scaleIn .2s var(--ease) both}
+.custom-select.drop-up .dropdown-menu{top:auto;bottom:calc(100% + 4px)}
 .custom-select.open .dropdown-menu{display:block}
 .custom-select .dropdown-menu .option{padding:9px 14px;font-size:.85rem;color:var(--fg2);cursor:pointer;
-  transition:all .15s;border-left:2px solid transparent}
+  transition:all .15s;border-left:2px solid transparent;display:flex;align-items:center;gap:8px}
 .custom-select .dropdown-menu .option:hover{background:rgba(124,106,255,.08);color:var(--fg);border-left-color:var(--accent)}
 .custom-select .dropdown-menu .option.selected{color:var(--accent2);background:rgba(124,106,255,.06);font-weight:600}
+.custom-select .dropdown-menu .option.selected::before{content:"\2713";font-size:.7rem;color:var(--accent);width:14px;text-align:center;flex-shrink:0}
+.custom-select .dropdown-menu .option:not(.selected)::before{content:"";width:14px;flex-shrink:0}
 .custom-select .dropdown-menu .option.focused{background:rgba(124,106,255,.08);color:var(--fg)}
 .custom-select .dropdown-search{padding:8px 10px;border-bottom:1px solid var(--border)}
 .custom-select .dropdown-search input{width:100%;padding:7px 10px;font-size:.82rem;background:rgba(30,30,46,.6);
@@ -489,35 +492,39 @@ function updateSteps(){const dots=document.querySelectorAll('#steps .dot');const
   dots.forEach((d,i)=>{d.classList.toggle('done',st[i]);d.classList.toggle('active',i===st.indexOf(true)&&st[i])})}
 
 /* ══ Custom Select ══ */
-function createCustomSelect(containerId,opts,value,onChange,searchable){
-  const c=document.getElementById(containerId);if(!c)return;
-  c.innerHTML='';const id='cs-'+containerId;
+function createCustomSelect(containerOrId,opts,value,onChange,searchable){
+  const c=typeof containerOrId==='string'?document.getElementById(containerOrId):containerOrId;
+  if(!c)return;c.innerHTML='';c.className='custom-select';
+  const id=c.id||('cs-'+Math.random().toString(36).slice(2,8));c.dataset.csId=id;
   const cur=opts.find(o=>o.value===value)||opts[0];
-  const trigger=document.createElement('div');trigger.className='select-trigger';trigger.tabIndex=0;trigger.role='listbox';trigger.setAttribute('aria-label',containerId);
+  const trigger=document.createElement('div');trigger.className='select-trigger';trigger.tabIndex=0;
+  trigger.setAttribute('role','listbox');trigger.setAttribute('aria-haspopup','listbox');
+  trigger.setAttribute('aria-label',c.id||'dropdown');
   trigger.innerHTML=`<span class="selected-text${cur?'':' placeholder'}">${cur?esc(cur.label):'Select…'}</span><svg class="arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`;
   const menu=document.createElement('div');menu.className='dropdown-menu';
-  if(searchable){const sd=document.createElement('div');sd.className='dropdown-search';const si=document.createElement('input');si.type='text';si.placeholder='Search…';si.addEventListener('input',()=>{
-    const q=si.value.toLowerCase();menu.querySelectorAll('.option').forEach(o=>{o.style.display=o.textContent.toLowerCase().includes(q)?'':'none'})});
+  if(searchable||opts.length>8){const sd=document.createElement('div');sd.className='dropdown-search';const si=document.createElement('input');si.type='text';si.placeholder='Search…';si.addEventListener('input',()=>{
+    const q=si.value.toLowerCase();menu.querySelectorAll('.option').forEach(o=>{o.style.display=o.dataset.label.toLowerCase().includes(q)?'':'none'})});
     sd.appendChild(si);menu.appendChild(sd)}
   let focusedIdx=-1;
-  opts.forEach((o,i)=>{const op=document.createElement('div');op.className='option'+(o.value===value?' selected':'');op.textContent=o.label;op.dataset.value=o.value;op.role='option';
-    op.addEventListener('click',()=>{onChange(o.value);updateSelect(c,id,opts,o.value,onChange,searchable)});
+  opts.forEach((o,i)=>{const op=document.createElement('div');op.className='option'+(o.value===value?' selected':'');op.textContent=o.label;op.dataset.value=o.value;op.dataset.label=o.label.toLowerCase();op.role='option';op.setAttribute('aria-selected',o.value===value?'true':'false');
+    op.addEventListener('click',()=>{onChange(o.value);createCustomSelect(c,opts,o.value,onChange,searchable)});
     menu.appendChild(op)});
   trigger.addEventListener('click',e=>{e.stopPropagation();toggleDropdown(id,c)});
   trigger.addEventListener('keydown',e=>{
     const items=menu.querySelectorAll('.option:not([style*="display: none"])');
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const dir=e.key==='ArrowDown'?1:-1;
       focusedIdx=Math.max(-1,Math.min(items.length-1,focusedIdx+dir));
-      items.forEach((it,i)=>it.classList.toggle('focused',i===focusedIdx))}
-    else if(e.key==='Enter'&&focusedIdx>=0){e.preventDefault();items[focusedIdx].click()}
-    else if(e.key==='Escape'){c.classList.remove('open');openDropdownId=null}});
+      items.forEach((it,i)=>it.classList.toggle('focused',i===focusedIdx));if(focusedIdx>=0)items[focusedIdx].scrollIntoView({block:'nearest'})}
+    else if(e.key==='Enter'){e.preventDefault();if(focusedIdx>=0&&items[focusedIdx])items[focusedIdx].click()}
+    else if(e.key==='Escape'||e.key==='Tab'){c.classList.remove('open');openDropdownId=null}
+    else if(e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!searchable&&opts.length<=8){const ch=e.key.toLowerCase();const match=Array.from(items).find(it=>it.dataset.label.startsWith(ch));if(match){match.click();match.scrollIntoView({block:'nearest'})}}});
   c.appendChild(trigger);c.appendChild(menu);
 }
-function toggleDropdown(id,c){const wasOpen=c.classList.contains('open');closeAllDropdowns();if(!wasOpen){c.classList.add('open');openDropdownId=id;c.querySelector('.dropdown-search input')?.focus()}}
+function toggleDropdown(id,c){const wasOpen=c.classList.contains('open');closeAllDropdowns();if(!wasOpen){c.classList.add('open');openDropdownId=id;
+  requestAnimationFrame(()=>{const m=c.querySelector('.dropdown-menu');if(!m)return;const r=m.getBoundingClientRect();if(r.bottom>window.innerHeight-10)c.classList.add('drop-up');else c.classList.remove('drop-up')});
+  const si=c.querySelector('.dropdown-search input');if(si)setTimeout(()=>si.focus(),10)}}
 function closeAllDropdowns(){document.querySelectorAll('.custom-select.open').forEach(s=>s.classList.remove('open'));openDropdownId=null}
 function closeDropdownsOnOutsideClick(){document.addEventListener('click',e=>{if(!e.target.closest('.custom-select'))closeAllDropdowns()})}
-function updateSelect(c,id,opts,value,onChange,searchable){
-  createCustomSelect(c.id||id,opts,value,onChange,searchable)}
 
 function populateFetchSelect(){
   const opts=Object.keys(S.providers).map(k=>({value:k,label:k+(S.providers[k].keys.length?'':' (no keys)')}));
@@ -637,7 +644,7 @@ function renderTiers(){
     c.addEventListener('dragleave',()=>c.classList.remove('drag-over'));
     c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
     l.appendChild(c);
-    tier.entries.forEach((en,ei)=>{const sel=c.querySelector(`.tier-provider-select[data-ti="${ti}"][data-ei="${ei}"]`);if(sel)createCustomSelect(sel.id||('tier-ps-'+ti+'-'+ei),Object.keys(S.providers).map(p=>({value:p,label:p})),en.provider,v=>{S.tiers[ti].entries[ei].provider=v;saveState()},false)})})}
+    tier.entries.forEach((en,ei)=>{const sel=c.querySelector(`.tier-provider-select[data-ti="${ti}"][data-ei="${ei}"]`);if(sel)createCustomSelect(sel,Object.keys(S.providers).map(p=>({value:p,label:p})),en.provider,v=>{S.tiers[ti].entries[ei].provider=v;saveState()},false)})})}
 
 /* ══ METRICS ══ */
 function initMetrics(){document.getElementById('refreshMetrics').addEventListener('click',loadMetrics);if(S.metricsData)renderMetrics(S.metricsData);loadMetrics()}

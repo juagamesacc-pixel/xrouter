@@ -15,6 +15,7 @@ toml = { workspace = true }
 xrouter-auth = { path = "../xrouter-auth" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+rand = { workspace = true }
 
 [[bin]]
 name = "xrouter-wizard-server"

@@ -47,11 +47,14 @@ mod tests {
         // Must stay reasonably small for fast loading. The device-login
         // (kiro/antigravity) flow, the Free/All model toggle, the Fetched /
         // Built-in sub-tabs, the custom Promise-based dialogs, and the
-        // no-whole-page-scroll layout all added necessary markup + JS, so the
-        // budget is raised to 62 KB.
+        // no-whole-page-scroll layout all added necessary markup + JS. The
+        // antigravity PKCE browser-login flow (Open Google Login button +
+        // account-poll) pushed it just over 62 KB, so the budget was raised to
+        // 66 KB. The Router Access card (API-key enable/disable + key-display
+        // modal) added the router auth UI, raising it again to 72 KB.
         assert!(
-            WIZARD_HTML_LEN < 62_000,
-            "wizard.html is {} bytes, exceeds 62 KB budget",
+            WIZARD_HTML_LEN < 72_000,
+            "wizard.html is {} bytes, exceeds 72 KB budget",
             WIZARD_HTML_LEN
         );
     }

@@ -1,12 +1,13 @@
 use clap::{Parser, Subcommand};
-use dialoguer::{Select, Input, Confirm, Password};
+use dialoguer::{Select, Input, Password};
 use xrouter_config::{Config, load, save, config_path, cache_models_path};
 use xrouter_core::{is_free, EndpointId};
 use xrouter_providers::{OpenAiCompatAdapter, RawModel, ModelCache, Provider, make_provider};
 use reqwest::Client;
-use std::collections::HashMap;
-use std::io::IsTerminal;
-use std::sync::Arc;
+use std::io::{IsTerminal, Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// xrouter — a blazing-fast LLM router that load-balances chat/model requests
 /// across multiple providers with quota-aware banning, tiers, and device login.
@@ -20,7 +21,14 @@ const AFTER_HELP: &str = "Storage paths:
   Model cache:   ~/.cache/xrouter/models.json
   Tracker:       ~/.local/share/xrouter/track.bin (--track)
   Wizard UI:     http://127.0.0.1:3001 (xrouter wizard --web)
-  Router:        http://127.0.0.1:3000 (xrouter serve)";
+  Router:        http://127.0.0.1:3000 (xrouter serve)
+
+Router access control:
+  xrouter auth enable   # generate a router API key (Bearer token)
+  xrouter auth disable  # remove the key (open access)
+  xrouter auth show     # show current key or 'auth disabled'
+  When a key is set, clients must send: Authorization: Bearer <key>
+  (except GET /healthz). The wizard UI also manages it under Router Access.";
 
 #[derive(Parser)]
 #[command(
@@ -103,6 +111,22 @@ enum Commands {
         #[command(subcommand)]
         sub: DeviceCmd,
     },
+    /// Manage the router's own API key (Bearer token clients must present).
+    #[command(name="auth")]
+    Auth {
+        #[command(subcommand)]
+        sub: AuthCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCmd {
+    /// Generate a new router API key (disables open access). Printed once.
+    Enable,
+    /// Remove the router API key (open access, no auth required).
+    Disable,
+    /// Show the current router API key, or "auth disabled".
+    Show,
 }
 
 #[derive(Subcommand)]
@@ -249,6 +273,11 @@ async fn main() -> anyhow::Result<()> {
             }
             DeviceCmd::List => device_list().await?,
             DeviceCmd::Logout { provider, identity } => device_logout(provider, identity).await?,
+        },
+        Commands::Auth { sub } => match sub {
+            AuthCmd::Enable => auth_enable().await?,
+            AuthCmd::Disable => auth_disable().await?,
+            AuthCmd::Show => auth_show().await?,
         },
     }
     Ok(())
@@ -589,53 +618,164 @@ async fn device_login(provider: String) -> anyhow::Result<()> {
             provider
         );
     }
-    println!(
-        "Initiating device login for '{}'…",
-        prov_name
-    );
+    if prov_name == "antigravity" {
+        // Google PKCE browser flow with a local loopback callback.
+        return device_login_google().await;
+    }
+
+    // kiro (and any future device-code provider): device authorization flow.
+    println!("Initiating device login for '{}'…", prov_name);
     // No manual account id — identity is derived from the signed-in provider
     // account after the login completes.
     let init = xrouter_auth::initiate_device_login(&prov_name, "", "").await?;
     println!("To complete login, open:");
-    println!("  {}", init.verification_uri);
+    println!("  {}", init.verification_uri_complete);
     println!("and enter the code: {}", init.user_code);
     println!("Polling for authorization (this may take a while)…");
 
     let acct = xrouter_auth::poll_device_login(&init).await?;
+    persist_device_account(&provider, &prov_name, &acct)?;
+    println!("✔ Logged in as '{}' for '{}'.", acct.account_id, prov_name);
+    Ok(())
+}
 
-    // Persist tokens in the off-RAM device-account store (0600).
-    let mut store = xrouter_auth::DeviceStore::load().unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
+/// Antigravity (Google) login: bind a free loopback port, print the consent
+/// URL, wait for the browser to redirect back with `?code=...`, then exchange
+/// it for tokens and persist the account.
+async fn device_login_google() -> anyhow::Result<()> {
+    // Bind a free loopback port for the OAuth callback.
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let redirect_uri = format!("http://localhost:{}/oauth/callback", port);
+    let init = xrouter_auth::build_google_auth_url(&redirect_uri);
+
+    println!("Initiating Google (antigravity) login…");
+    println!("Open this URL in your browser:");
+    println!("  {}", init.auth_url);
+    println!("(Waiting up to 5 minutes for the browser callback…)");
+
+    // Accept the single callback on a worker thread; the async task enforces the
+    // 5-minute timeout.
+    let (tx, rx) = mpsc::channel::<String>();
+    let worker = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let code = req
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|path| {
+                    let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    q.split('&').find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        if k == "code" {
+                            Some(url_decode(v))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap_or_default();
+            let body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+                <title>Login complete</title></head>\
+                <body style=\"font-family:system-ui;background:#0f1117;color:#e6e6e6;\
+                display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0\">\
+                <div style=\"text-align:center;padding:32px;border:1px solid #2a2f3a;border-radius:14px\">\
+                Login complete — you can close this tab.</div></body></html>";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            let _ = tx.send(code);
+        }
+    });
+
+    let received = tokio::time::timeout(
+        Duration::from_secs(300),
+        tokio::task::spawn_blocking(move || rx.recv()),
+    )
+    .await;
+    let code = match received {
+        Ok(Ok(Ok(code))) => code,
+        _ => anyhow::bail!("timed out or failed waiting for the Google login callback (5 min)"),
+    };
+    let _ = worker.join();
+    if code.is_empty() {
+        anyhow::bail!("callback received without a code (authorization denied?)");
+    }
+
+    let acct = xrouter_auth::complete_google_login(&init, &code).await?;
+    persist_device_account("antigravity", "antigravity", &acct)?;
+    println!("✔ Logged in as '{}' for 'antigravity'.", acct.account_id);
+    Ok(())
+}
+
+/// Persist a freshly-logged-in device account: tokens go to the off-RAM 0600
+/// device store; non-secret metadata goes to the main config.
+fn persist_device_account(
+    provider: &str,
+    prov_name: &str,
+    acct: &xrouter_auth::DeviceAccountConfig,
+) -> anyhow::Result<()> {
+    let mut store = xrouter_auth::DeviceStore::load()
+        .unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
     store.add_account(acct.clone());
     store.save()?;
 
-    // Record the account metadata in the main config (no secrets).
     let mut cfg = load().unwrap_or_else(|_| Config::default_with_builtins());
-    let pcfg = cfg.providers.entry(provider.clone()).or_insert_with(|| {
+    let pcfg = cfg.providers.entry(provider.to_string()).or_insert_with(|| {
         xrouter_config::ProviderConfig {
-            kind: provider.clone(),
-            base_url: default_device_base_url(&prov_name),
+            kind: provider.to_string(),
+            base_url: default_device_base_url(prov_name),
             enabled: true,
             keys: vec![],
             quota_ban_secs: 300,
             accounts: vec![],
         }
     });
-    if !pcfg.accounts.iter().any(|a| a.account_id == acct.account_id) {
+    if !pcfg
+        .accounts
+        .iter()
+        .any(|a| a.account_id == acct.account_id)
+    {
         pcfg.accounts.push(xrouter_config::DeviceAccountConfig {
             account_id: acct.account_id.clone(),
             display_name: acct.display_name.clone(),
-            provider: prov_name.clone(),
+            provider: prov_name.to_string(),
             access_token: String::new(),
             refresh_token: None,
             expires_at: None,
+            client_id: None,
+            client_secret: None,
         });
     }
     save(&cfg)?;
-    println!(
-        "✔ Logged in as '{}' for '{}'.",
-        acct.account_id, prov_name
-    );
     Ok(())
+}
+
+/// Minimal URL-decode (handles `%XX` and `+`→space) for callback query params.
+fn url_decode(s: &str) -> String {
+    let s = s.replace('+', " ");
+    let bytes = s.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(h) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(h as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 async fn device_list() -> anyhow::Result<()> {
@@ -770,6 +910,51 @@ async fn run_test(tier: String, allow_live: bool, base_url_override: Option<Stri
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Generate a secure router API key: `xr_` + 32 hex chars (16 random bytes).
+fn gen_router_key() -> String {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let n: u128 = rng.random();
+    format!("xr_{:032x}", n)
+}
+
+/// `xrouter auth enable` — generate a router API key, persist it, print once.
+async fn auth_enable() -> anyhow::Result<()> {
+    let mut cfg = load().unwrap_or_else(|_| Config::default_with_builtins());
+    let key = gen_router_key();
+    cfg.settings.api_token = Some(key.clone());
+    save(&cfg)?;
+    println!("Router API key enabled. This key is shown ONLY ONCE:");
+    println!();
+    println!("  {}", key);
+    println!();
+    println!("Clients must now send:  Authorization: Bearer {}", key);
+    println!("(GET /healthz stays open. /admin/* and all chat/responses/image routes require the key.)");
+    Ok(())
+}
+
+/// `xrouter auth disable` — remove the router API key (open access).
+async fn auth_disable() -> anyhow::Result<()> {
+    let mut cfg = load().unwrap_or_else(|_| Config::default_with_builtins());
+    cfg.settings.api_token = None;
+    save(&cfg)?;
+    println!("Router API key disabled — open access (no auth required).");
+    Ok(())
+}
+
+/// `xrouter auth show` — print the current key or "auth disabled".
+async fn auth_show() -> anyhow::Result<()> {
+    let cfg = load().unwrap_or_else(|_| Config::default_with_builtins());
+    match cfg.settings.api_token {
+        Some(ref t) if !t.is_empty() => {
+            println!("auth enabled — current token:");
+            println!("  {}", t);
+        }
+        _ => println!("auth disabled (open access)"),
     }
     Ok(())
 }

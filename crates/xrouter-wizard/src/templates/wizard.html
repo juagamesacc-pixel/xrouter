@@ -53,8 +53,8 @@ header p{color:var(--fg3);font-size:.9rem}
 .check svg{width:11px;height:11px;stroke:#fff;stroke-width:2.5;fill:none;opacity:0;transform:scale(.5);transition:all .2s var(--ease-b)}
 label.field{display:block;margin-bottom:14px}
 label.field .label{display:block;font-size:.82rem;font-weight:500;color:var(--fg2);margin-bottom:5px}
-input[type="text"],input[type="number"],input[type="password"],select,textarea{width:100%;padding:10px 14px;font-size:.9rem;font-family:var(--font);background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
-input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+input[type="text"],input[type="number"],input[type="password"],textarea{width:100%;padding:10px 14px;font-size:.9rem;background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.15)}
 input::placeholder{color:var(--fg3)}
 .key-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);animation:fadeIn .3s var(--ease) both;min-width:0;overflow:hidden}
 .key-row:last-child{border-bottom:none}
@@ -73,7 +73,7 @@ input::placeholder{color:var(--fg3)}
 .ban-row .tip .tip-text{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);width:240px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-xs);font-size:.78rem;color:var(--fg2);line-height:1.5;z-index:99;box-shadow:var(--shadow-lg);pointer-events:none}
 .ban-row .tip:hover .tip-text{display:block}
 .ban-row .tip::after{content:"?";font-size:.7rem;font-weight:700;color:var(--fg3)}
-.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;font-size:.85rem;font-weight:600;font-family:var(--font);border:none;border-radius:var(--radius-xs);cursor:pointer;transition:all .2s var(--ease);position:relative;overflow:hidden;white-space:nowrap}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;font-size:.85rem;font-weight:600;border:none;border-radius:var(--radius-xs);cursor:pointer;transition:all .2s var(--ease);position:relative;overflow:hidden;white-space:nowrap}
 .btn-primary{background:var(--accent);color:#fff}
 .btn-primary:hover{background:var(--accent3);transform:translateY(-1px);box-shadow:0 4px 12px rgba(99,102,241,.3)}
 .btn-secondary{background:var(--bg4);color:var(--fg2);border:1.5px solid var(--border)}
@@ -104,9 +104,8 @@ input::placeholder{color:var(--fg3)}
 .tier-card.dragging{opacity:.5;border-color:var(--accent);box-shadow:var(--shadow-lg)}
 .tier-card.drag-over{border-color:var(--accent);background:rgba(99,102,241,.04)}
 .tier-header{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
-.tier-header .grip{cursor:grab;color:var(--fg3);display:flex;align-items:center;padding:4px;border-radius:4px;transition:color .15s;flex-shrink:0}
+.tier-header .grip{cursor:grab;color:var(--fg3);padding:4px;border-radius:4px;transition:color .15s;flex-shrink:0;font-size:1.2rem;line-height:1}
 .tier-header .grip:hover{color:var(--fg2)}.tier-header .grip:active{cursor:grabbing}
-.tier-header .grip svg{width:16px;height:16px}
 .tier-header .tier-name{font-weight:600;font-size:.95rem;flex:1 1 0;background:transparent;border:none;color:var(--fg);outline:none;padding:4px 8px;border-radius:4px;transition:background .15s;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tier-header .tier-name:hover{background:var(--bg4)}.tier-header .tier-name:focus{background:var(--bg4);box-shadow:0 0 0 2px rgba(99,102,241,.2)}
 .tier-header .tier-count{flex-shrink:0;font-size:.72rem;color:var(--fg3);padding:2px 8px;background:var(--bg4);border-radius:20px;white-space:nowrap;line-height:1.5;letter-spacing:.02em}
@@ -114,7 +113,8 @@ input::placeholder{color:var(--fg3)}
 .tier-header .add-entry-btn{margin-left:auto}
 .tier-entries{display:flex;flex-direction:column;gap:6px}
 .tier-entry{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg);border-radius:var(--radius-xs);border:1px solid var(--border);font-size:.82rem}
-.tier-entry select{flex:1;font-size:.82rem;padding:6px 10px}
+.tier-entry .custom-select{flex:1;min-width:130px}
+.tier-entry .select-trigger{padding:7px 10px;font-size:.82rem}
 .tier-entry input{flex:2;font-family:var(--mono);font-size:.82rem;padding:6px 10px}
 .tier-entry .remove-entry{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:transparent;border:none;color:var(--fg3);cursor:pointer;transition:all .15s;flex-shrink:0}
 .tier-entry .remove-entry:hover{background:rgba(239,68,68,.15);color:var(--red)}
@@ -130,13 +130,12 @@ input::placeholder{color:var(--fg3)}
 .error-table tr:hover td{background:rgba(99,102,241,.03)}
 .error-table .status-err{color:var(--red);font-weight:600}.error-table .status-ok{color:var(--green);font-weight:600}
 .tab-bar{display:flex;gap:2px;margin-bottom:14px;flex-shrink:0;background:var(--bg3);padding:3px;border-radius:var(--radius-sm)}
-.tab-btn{flex:1;padding:9px 16px;font-size:.82rem;font-weight:600;font-family:var(--font);background:transparent;border:none;color:var(--fg3);cursor:pointer;border-radius:var(--radius-xs);transition:all .2s var(--ease)}
+.tab-btn{flex:1;padding:9px 16px;font-size:.82rem;font-weight:600;background:transparent;border:none;color:var(--fg3);cursor:pointer;border-radius:var(--radius-xs);transition:all .2s var(--ease)}
 .tab-btn:hover{color:var(--fg2)}.tab-btn.active{background:var(--bg);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .tab-panel{display:none;animation:fadeIn .3s var(--ease);flex:1;min-height:0;overflow-y:auto;padding-bottom:24px}.tab-panel.active{display:block}
 .toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;background:var(--bg2);border:1px solid var(--green);border-radius:var(--radius-sm);color:var(--green);font-size:.85rem;font-weight:500;box-shadow:var(--shadow-lg);z-index:1000;animation:fadeUp .3s var(--ease-b) both;display:none}
 .toast.error{border-color:var(--red);color:var(--red)}.toast.show{display:flex;align-items:center;gap:8px}
 .empty-state{text-align:center;padding:40px 20px;color:var(--fg3)}
-.empty-state svg{width:48px;height:48px;stroke:var(--bg4);margin-bottom:12px}
 .empty-state p{font-size:.88rem}
 @media(max-width:640px){.container{padding:20px 16px 0}.provider-grid{grid-template-columns:1fr 1fr}.ban-row{flex-wrap:wrap}.model-toolbar{flex-direction:column}.tier-entry{flex-wrap:wrap}.metrics-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:400px){.provider-grid{grid-template-columns:1fr}}
@@ -150,9 +149,30 @@ input::placeholder{color:var(--fg3)}
 .modal h3{font-size:1.05rem;font-weight:600;margin-bottom:8px;position:relative}
 .modal p{font-size:.86rem;color:var(--fg2);line-height:1.6;word-break:break-word;position:relative;max-height:50vh;overflow-y:auto}
 .modal .modal-actions{margin-top:20px;display:flex;justify-content:flex-end;position:relative}
-.segmented{display:inline-flex;background:var(--bg4);border:1px solid var(--border);border-radius:var(--radius-xs);padding:2px;gap:2px;flex-shrink:0}.segmented button{border:none;background:transparent;color:var(--fg3);font-family:var(--font);font-size:.8rem;font-weight:600;padding:6px 16px;border-radius:6px;cursor:pointer;transition:all .2s var(--ease)}.segmented button.active{background:var(--bg);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.segmented{display:inline-flex;background:var(--bg4);border:1px solid var(--border);border-radius:var(--radius-xs);padding:2px;gap:2px;flex-shrink:0}.segmented button{border:none;background:transparent;color:var(--fg3);font-size:.8rem;font-weight:600;padding:6px 16px;border-radius:6px;cursor:pointer;transition:all .2s var(--ease)}.segmented button.active{background:var(--bg);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .model-chip{display:inline-flex;align-items:center;gap:6px;font-size:.76rem;font-family:var(--mono);padding:4px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:20px;color:var(--fg2)}
 .device-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.custom-select{position:relative;min-width:160px}
+.select-trigger{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-size:.9rem;color:var(--fg);transition:border-color .2s,box-shadow .2s;user-select:none}
+.select-trigger:hover{border-color:var(--border2)}
+.custom-select.open .select-trigger{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+.arrow{width:12px;height:12px;stroke:var(--fg3);fill:none;stroke-width:2;transition:transform .2s var(--ease);flex-shrink:0}
+.custom-select.open .arrow{transform:rotate(180deg)}
+.selected-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.placeholder{color:var(--fg3)}
+.dropdown-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-xs);box-shadow:var(--shadow-lg);z-index:5000;max-height:240px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bg4) transparent;display:none;animation:fadeIn .15s var(--ease) both}
+.custom-select.drop-up .dropdown-menu{top:auto;bottom:calc(100% + 4px)}
+.custom-select.open .dropdown-menu{display:block}
+.option{padding:9px 14px;font-size:.85rem;color:var(--fg2);cursor:pointer;transition:all .15s;border-left:2px solid transparent;display:flex;align-items:center;gap:8px}
+.option:hover{background:rgba(99,102,241,.08);color:var(--fg);border-left-color:var(--accent)}
+.option.selected{color:var(--accent2);background:rgba(99,102,241,.06);font-weight:600}
+.option.selected::before{content:"\2713";font-size:.7rem;color:var(--accent)}
+.option::before{content:"";width:14px;flex-shrink:0}
+.option.focused{background:rgba(99,102,241,.08);color:var(--fg)}
+.dropdown-search{padding:8px 10px;border-bottom:1px solid var(--border)}
+.dropdown-search input{padding:7px 10px;font-size:.82rem}
+.dropdown-search input:focus{border-color:var(--accent)}
+#dialogInput{display:none;margin-top:14px;width:100%;padding:10px 14px;font-size:.9rem;background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
 </style>
 </head>
 <body>
@@ -181,8 +201,7 @@ input::placeholder{color:var(--fg3)}
         <span class="label" style="font-size:.82rem;font-weight:500;color:var(--fg2)">API Keys</span>
         <div id="keyList"></div>
         <button class="btn btn-secondary btn-sm" id="addKeyBtn" style="margin-top:10px">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add key
+          + Add key
         </button>
         <div class="key-count" id="keyCount"></div>
       </div>
@@ -203,7 +222,7 @@ input::placeholder{color:var(--fg3)}
       <p class="sub">Configure an OpenAI-compatible or Anthropic endpoint</p>
       <label class="field"><span class="label">Provider ID</span><input type="text" id="customId" placeholder="my-provider"></label>
       <label class="field"><span class="label">Base URL</span><input type="text" id="customUrl" placeholder="https://api.example.com/v1"></label>
-      <label class="field"><span class="label">Protocol</span><select id="customKind"><option value="openai-compat">OpenAI-compatible</option><option value="anthropic">Anthropic</option></select></label>
+      <label class="field"><span class="label">Protocol</span><div class="custom-select" id="customKindSelect"></div></label>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
         <button class="btn btn-secondary" id="cancelCustom">Cancel</button>
         <button class="btn btn-primary" id="saveCustom">Create provider</button>
@@ -214,12 +233,24 @@ input::placeholder{color:var(--fg3)}
       <p class="sub">Authenticate a device provider (kiro / antigravity) via the OAuth device flow</p>
       <div class="device-row">
         <label class="field" style="min-width:150px;margin:0"><span class="label">Provider</span>
-          <select id="deviceProvider"><option value="kiro">kiro</option><option value="antigravity">antigravity</option></select>
+          <div class="custom-select" id="deviceProviderSelect"></div>
         </label>
         <button class="btn btn-primary" id="deviceLoginBtn">Login</button>
       </div>
       <div id="deviceStatus" style="margin-top:12px;font-size:.85rem;color:var(--fg2)"></div>
       <div id="deviceAccounts" style="margin-top:14px"></div>
+    </div>
+    <div class="section" style="animation-delay:.4s">
+      <h2>Router Access</h2>
+      <p class="sub">Protect the router with a single API key (Bearer token). Clients must send <code style="background:var(--bg4);padding:2px 8px;border-radius:4px;font-family:var(--mono);font-size:.82rem">Authorization: Bearer &lt;key&gt;</code>. GET /healthz stays open.</p>
+      <div id="authStatus" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;font-size:.9rem">
+        <span class="free-tag" id="authBadge" style="background:rgba(113,113,122,.15);color:var(--fg3)">Loading…</span>
+        <span id="authHint" style="color:var(--fg3);font-size:.82rem"></span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="genKeyBtn">Generate API key</button>
+        <button class="btn btn-danger" id="disableKeyBtn">Disable</button>
+      </div>
     </div>
   </div>
 
@@ -229,8 +260,14 @@ input::placeholder{color:var(--fg3)}
       <h2>Model Discovery</h2>
       <p class="sub">Fetch available models from a configured provider</p>
       <div style="display:flex;gap:10px;align-items:end;margin-bottom:16px;flex-wrap:wrap">
-        <label class="field" style="flex:1;min-width:180px;margin:0"><span class="label">Provider</span><select id="fetchProvider"></select></label>
-        <label class="field" style="min-width:140px;margin:0"><span class="label">Type</span><select id="fetchType"><option value="text">Text (chat)</option><option value="images">Images</option><option value="all">All</option></select></label>
+        <div style="flex:1;min-width:180px">
+          <span class="label" style="display:block;font-size:.82rem;font-weight:500;color:var(--fg2);margin-bottom:5px">Provider</span>
+          <div class="custom-select" id="fetchProviderSelect"></div>
+        </div>
+        <div style="min-width:140px">
+          <span class="label" style="display:block;font-size:.82rem;font-weight:500;color:var(--fg2);margin-bottom:5px">Type</span>
+          <div class="custom-select" id="fetchTypeSelect"></div>
+        </div>
         <button class="btn btn-primary" id="fetchModelsBtn">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           Fetch models
@@ -274,13 +311,11 @@ input::placeholder{color:var(--fg3)}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
         <div><h2>Tier Editor</h2><p class="sub" style="margin-bottom:0">Drag to reorder priority. Top = first attempt.</p></div>
         <button class="btn btn-primary btn-sm" id="addTierBtn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add tier
+          + Add tier
         </button>
       </div>
       <div id="tierList" style="margin-top:14px"></div>
       <div id="tierEmpty" class="empty-state" style="display:none">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/></svg>
         <p>No tiers yet. Add models first, then create tiers.</p>
       </div>
     </div>
@@ -293,7 +328,6 @@ input::placeholder{color:var(--fg3)}
       <p class="sub">Live performance data from the tracker</p>
       <div id="metricsContent">
         <div class="empty-state" id="metricsEmpty">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
           <p>No tracker data yet. Start the router with <code style="background:var(--bg4);padding:2px 8px;border-radius:4px;font-family:var(--mono);font-size:.82rem">xrouter serve</code> to collect metrics.</p>
         </div>
         <div id="metricsData" style="display:none">
@@ -317,28 +351,95 @@ input::placeholder{color:var(--fg3)}
     <div class="modal-icon" id="dialogIcon" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.25)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
     <h3 id="dialogTitle">Notice</h3>
     <p id="dialogMsg"></p>
-    <input type="text" id="dialogInput" style="display:none;margin-top:14px;width:100%;padding:10px 14px;font-size:.9rem;font-family:var(--font);background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s">
-    <div class="modal-actions" id="dialogActions"><button class="btn btn-primary" id="dialogOk">OK</button></div>
+    <input type="text" id="dialogInput">
+    <div class="modal-actions" id="dialogActions"></div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
 
 <script>
-const S={providers:{},tiers:[],selectedProvider:null,modelCache:{},selectedModels:new Set(),customModels:[],metricsData:null,freeOnly:true};
+const S={providers:{},tiers:[],selectedProvider:null,modelCache:{},selectedModels:new Set(),customModels:[],metricsData:null,freeOnly:true,api_token:null};
 const BUILTINS={'opencode-zen':{kind:'openai-compat',base_url:'https://opencode.ai/zen/v1',keys:[],ban_duration:300,enabled:true},'openrouter':{kind:'openai-compat',base_url:'https://openrouter.ai/api/v1',keys:[],ban_duration:300,enabled:true},'together-image':{kind:'openai-compat',base_url:'https://api.together.ai/v1',keys:[],ban_duration:300,enabled:true}};
 const EYE_OPEN=`<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_CLOSED=`<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+let customKindValue='openai-compat',deviceProviderValue='kiro',fetchProviderValue='',fetchTypeValue='text',openDropdownId=null;
 
-document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();initTabs();initFetchModels();initModelSubTabs();initTierEditor();initMetrics();initDeviceLogin();updateSteps();setupSync()});
-function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.providers)){S.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],ban_duration:v.quota_ban_secs||300}};if(d.tiers)S.tiers=d.tiers.map(t=>({name:t.name,entries:(t.entries||[]).map(e=>({provider:e.provider,model:e.model,is_default:!!e.is_default,weight:e.weight||1,endpoint_id:e.endpoint_id||''}))}));if(d.settings&&d.settings.default_tier)S.default_tier=d.settings.default_tier}
+document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();initTabs();initFetchModels();initModelSubTabs();initTierEditor();initMetrics();initDeviceLogin();initRouterAccess();updateSteps();setupSync()});
+function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.providers)){S.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],ban_duration:v.quota_ban_secs||300}};if(d.tiers)S.tiers=d.tiers.map(t=>({name:t.name,entries:(t.entries||[]).map(e=>({provider:e.provider,model:e.model,is_default:!!e.is_default,weight:e.weight||1,endpoint_id:e.endpoint_id||''}))}));if(d.settings){if(d.settings.default_tier)S.default_tier=d.settings.default_tier;S.api_token=(d.settings.api_token&&d.settings.api_token.length)?d.settings.api_token:null}}
 async function loadState(){try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();applyServerConfig(d)}}catch(e){}for(const[k,v]of Object.entries(BUILTINS))if(!S.providers[k])S.providers[k]={...v}}
-function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
-async function persist(){try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildServerPayload())})}catch(e){}try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}try{localStorage.setItem('wizard_sync',Date.now().toString())}catch(e){}syncFromServer()}
+function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null,api_token:S.api_token||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
+async function persist(){
+  let res={ok:false,error:'unknown error'};
+  let gotServerResponse=false;
+  try{
+    const payload=buildServerPayload();
+    const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!r.ok){
+      let msg='Failed to save configuration (HTTP '+r.status+')';
+      try{const d=await r.json(); if(d&&d.error)msg=d.error;}catch(e){}
+      res={ok:false,error:msg};
+    }else{
+      gotServerResponse=true;
+      const d=await r.json();
+      // Success is ONLY when the server confirms it actually verified the save.
+      if(!d.verified){
+        res={ok:false,error:'save verification failed: '+(d.error||'server reported unverified save')};
+      }else{
+        // Independent re-read from disk to confirm the saved providers/tiers.
+        try{
+          const c=await fetch('/api/config');
+          if(!c.ok){
+            res={ok:false,error:'save verification failed: could not re-read saved config'};
+          }else{
+            const saved=await c.json();
+            const mismatch=verifySaved(payload,saved);
+            if(mismatch){
+              res={ok:false,error:'save verification mismatch: '+mismatch};
+            }else{
+              res={ok:true,verified:true,providers:d.providers,tiers:d.tiers};
+            }
+          }
+        }catch(e){
+          res={ok:false,error:'save verification failed: '+(e&&e.message?e.message:e)};
+        }
+      }
+    }
+  }catch(e){
+    res={ok:false,error:'Network error saving config: '+(e&&e.message?e.message:e)};
+  }
+  // On success, re-sync from the (now verified) server state.
+  if(res.ok){
+    try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}
+    try{localStorage.setItem('wizard_sync',Date.now().toString())}catch(e){}
+    syncFromServer();
+  }else if(gotServerResponse){
+    // Server responded but verification failed → revert in-memory state to the
+    // on-disk truth so the UI stops claiming a save that never landed.
+    try{syncFromServer()}catch(e){}
+  }
+  return res;
+}
+
+// Compare the payload we sent against what the server re-read from disk.
+// Returns null on match, or a human-readable mismatch description.
+function verifySaved(sent,saved){
+  for(const [id,p] of Object.entries(sent.providers||{})){
+    const sp=(saved.providers&&saved.providers[id])||null;
+    if(!sp) return 'provider "'+id+'" missing after save';
+    if(sp.base_url!==p.base_url) return 'provider "'+id+'" base_url mismatch';
+    if((sp.keys||[]).length!==(p.keys||[]).length) return 'provider "'+id+'" key count mismatch ('+(sp.keys||[]).length+' saved vs '+(p.keys||[]).length+' expected)';
+    if(!!sp.enabled!==!!p.enabled) return 'provider "'+id+'" enabled flag mismatch';
+  }
+  const sentNames=(sent.tiers||[]).map(t=>t.name).sort().join(',');
+  const savedNames=(saved.tiers||[]).map(t=>t.name).sort().join(',');
+  if(sentNames!==savedNames) return 'tier names mismatch after save';
+  return null;
+}
 function saveState(){persist();try{localStorage.setItem('xrouter_wizard',JSON.stringify({providers:S.providers,tiers:S.tiers,metricsData:S.metricsData}))}catch(e){}}
 let syncChannel=null;
 function setupSync(){try{syncChannel=new BroadcastChannel('wizard-sync');syncChannel.onmessage=e=>{if(e.data==='reload')syncFromServer()}}catch(e){}window.addEventListener('storage',e=>{if(e.key==='wizard_sync')syncFromServer()});window.addEventListener('focus',()=>syncFromServer())}
-async function syncFromServer(){try{const r=await fetch('/api/config');if(!r.ok)return;const d=await r.json();applyServerConfig(d);renderAll()}catch(e){}}
-function renderAll(){renderProviders();renderTiers();renderSavedModels();populateFetchSelect();updateSteps()}
+async function syncFromServer(){try{const r=await fetch('/api/config');if(!r.ok)return;const d=await r.json();applyServerConfig(d);renderAll();loadAuthStatus()}catch(e){}}
+function renderAll(){renderProviders();renderTiers();renderSavedModels();populateFetchSelect();updateSteps();initDeviceLogin();loadAuthStatus()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg,err){const el=document.getElementById('toast');el.textContent=(err?'✕ ':'✔ ')+msg;el.className='toast show'+(err?' error':'');setTimeout(()=>el.classList.remove('show'),3000)}
 function showModal(title,msg){openDialog({type:'alert',title:title||'Notice',msg:String(msg||'')})}
@@ -387,6 +488,42 @@ function openDialog(opts){
 function closeDialog(result){const o=document.getElementById('dialogOverlay');o.classList.remove('show');o.style.display='none';const r=dialogResolver;dialogResolver=null;if(r)r(result)}
 document.getElementById('dialogOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('dialogOverlay'))closeDialog(dialogType==='alert'?true:null)});
 
+// ══ Custom Dropdown Component ══
+function createCustomSelect(cId,opts,value,onChange,searchable){
+  const c=typeof cId==='string'?document.getElementById(cId):cId;if(!c)return;
+  c.innerHTML='';c.className='custom-select';
+  const id=c.id||'cs-'+Math.random().toString(36).slice(2,8),cur=opts.find(o=>o.value===value)||opts[0];
+  const el=tag=>{const e=document.createElement(tag);return e};
+  const trigger=el('div');trigger.className='select-trigger';trigger.tabIndex=0;
+  trigger.innerHTML=`<span class="selected-text${cur?'':' placeholder'}">${cur?esc(cur.label):'Select…'}</span><svg class="arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`;
+  const menu=el('div');menu.className='dropdown-menu';
+  if(searchable||opts.length>8){const sd=el('div');sd.className='dropdown-search';const si=el('input');si.type='text';si.placeholder='Search…';
+    si.oninput=()=>{const q=si.value;menu.querySelectorAll('.option').forEach(o=>{o.style.display=o.dataset.label.includes(q)?'':'none'})};
+    sd.appendChild(si);menu.appendChild(sd)}
+  let fi=-1;
+  opts.forEach(o=>{const op=el('div');op.className='option'+(o.value===value?' selected':'');
+    op.textContent=o.label;op.dataset.value=o.value;op.dataset.label=o.label.toLowerCase();
+    op.onclick=()=>{onChange(o.value);createCustomSelect(c,opts,o.value,onChange,searchable)};menu.appendChild(op)});
+  trigger.onclick=e=>{e.stopPropagation();toggleDropdown(id,c)};
+  trigger.onkeydown=e=>{
+    const items=menu.querySelectorAll('.option:not([style*="display: none"])');
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();fi=Math.max(-1,Math.min(items.length-1,fi+(e.key==='ArrowDown'?1:-1)));
+      items.forEach((it,i)=>it.classList.toggle('focused',i===fi));if(fi>=0)items[fi].scrollIntoView({block:'nearest'})}
+    else if(e.key==='Enter'&&fi>=0){e.preventDefault();items[fi].click()}
+    else if(e.key==='Escape'||e.key==='Tab'){c.classList.remove('open');openDropdownId=null}
+    else if(e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!searchable&&opts.length<=8){
+      const m=Array.from(items).find(it=>it.dataset.label.startsWith(e.key.toLowerCase()));
+      if(m){m.click();m.scrollIntoView({block:'nearest'})}}};
+  c.appendChild(trigger);c.appendChild(menu);
+}
+function toggleDropdown(id,c){const w=c.classList.contains('open');closeAllDropdowns();
+  if(!w){c.classList.add('open');openDropdownId=id;
+    requestAnimationFrame(()=>{const m=c.querySelector('.dropdown-menu');if(!m)return;
+      m.getBoundingClientRect().bottom>window.innerHeight-10?c.classList.add('drop-up'):c.classList.remove('drop-up')});
+    const si=c.querySelector('.dropdown-search input');if(si)setTimeout(()=>si.focus(),10)}}
+function closeAllDropdowns(){document.querySelectorAll('.custom-select.open').forEach(s=>s.classList.remove('open'));openDropdownId=null}
+document.addEventListener('click',e=>{if(!e.target.closest('.custom-select'))closeAllDropdowns()});
+
 function initTabs(){document.querySelectorAll('.tab-btn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('panel-'+b.dataset.tab).classList.add('active')}))}
 function updateSteps(){const dots=document.querySelectorAll('#steps .dot');const hasProv=Object.keys(S.providers).some(k=>S.providers[k].keys.length>0);const hasMod=Object.keys(S.modelCache).length>0;const hasTier=S.tiers.length>0;const st=[true,hasProv,hasMod,hasTier,hasTier];dots.forEach((d,i)=>{d.classList.toggle('done',st[i]);d.classList.toggle('active',i===st.indexOf(true)&&st[i])})}
 
@@ -413,22 +550,30 @@ r.querySelector('.btn-danger').addEventListener('click',()=>{S.providers[S.selec
 l.appendChild(r)});
 document.getElementById('keyCount').textContent=keys.length?keys.length+' key'+(keys.length>1?'s':'')+' · round-robin enabled':'No keys added yet'}
 
-document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(k){S.providers[S.selectedProvider].keys.push(k);saveState();renderKeys(S.providers[S.selectedProvider].keys);toast('Key added')}});
-document.getElementById('saveConfig').addEventListener('click',()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;saveState();toast('Provider saved');updateSteps()});
+document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(k){const pid=S.selectedProvider;S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){const i=S.providers[pid].keys.length-1;if(i>=0)S.providers[pid].keys.splice(i,1);renderKeys(S.providers[pid].keys);showModal('Could not save key',r.error);return}renderKeys(S.providers[pid].keys);toast('Key added ✓ (verified)')}});
+document.getElementById('saveConfig').addEventListener('click',async()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;const r=await persist();if(!r.ok){showModal('Could not save provider',r.error);return}toast('Provider saved ✓ (verified)');updateSteps()});
 document.getElementById('cancelConfig').addEventListener('click',()=>{document.getElementById('providerConfig').style.display='none';S.selectedProvider=null;renderProviders()});
 document.getElementById('cancelCustom').addEventListener('click',()=>{document.getElementById('customProviderForm').style.display='none'});
-document.getElementById('saveCustom').addEventListener('click',()=>{const id=document.getElementById('customId').value.trim(),url=document.getElementById('customUrl').value.trim(),kind=document.getElementById('customKind').value;
+document.getElementById('saveCustom').addEventListener('click',()=>{const id=document.getElementById('customId').value.trim(),url=document.getElementById('customUrl').value.trim(),kind=customKindValue;
 if(!id||!url){toast('Fill in all fields',true);return}S.providers[id]={kind,base_url:url,keys:[],ban_duration:300,enabled:true};saveState();
 document.getElementById('customProviderForm').style.display='none';S.selectedProvider=id;renderProviders();showProviderConfig(id);toast('Custom provider created')});
 
 // ══ DEVICE LOGIN (kiro / antigravity) ══
 function initDeviceLogin(){const b=document.getElementById('deviceLoginBtn');if(b)b.onclick=deviceLogin;loadDeviceAccounts()}
-async function deviceLogin(){const p=document.getElementById('deviceProvider').value,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}devicePoll(d,s)}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
-function devicePoll(d,s){const html='Visit <a href="'+esc(d.verification_uri)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(d.verification_uri)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';openDialog({type:'alert',title:'Device Login — '+d.provider,msg:html,icon:false});fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';const id=pd.identity||(pd.account&&pd.account.account_id)||'';document.getElementById('dialogMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(id)+'</strong>.</div>';if(s)s.textContent='Connected as '+id;toast('Device account connected');loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
+async function deviceLogin(){const p=deviceProviderValue,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}if(d.auth_url){googleLogin(d,s)}else{devicePoll(d,s)}}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
+function devicePoll(d,s){const link=d.verification_uri_complete||d.verification_uri;const html='Visit <a href="'+esc(link)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(link)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';openDialog({type:'alert',title:'Device Login — '+d.provider,msg:html,icon:false});fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';const id=pd.identity||(pd.account&&pd.account.account_id)||'';document.getElementById('dialogMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(id)+'</strong>.</div>';if(s)s.textContent='Connected as '+id;toast('Device account connected');loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
+function googleLogin(d,s){const html='<div style="text-align:center"><p style="margin:0 0 14px">Authorize xrouter to use your Google (antigravity) account.</p><a class="btn btn-primary" href="'+esc(d.auth_url)+'" target="_blank" rel="noopener">Open Google Login</a><div style="margin-top:14px;color:var(--fg3);font-size:.82rem" id="googleWait">waiting for authorization…</div></div>';openDialog({type:'alert',title:'Google Login — antigravity',msg:html,icon:false});const start=Date.now();const iv=setInterval(async()=>{try{const r=await fetch('/api/device/accounts');const j=await r.json();const found=(j.accounts||[]).find(a=>a.provider==='antigravity');if(found){clearInterval(iv);const st=document.getElementById('googleWait');if(st){st.textContent='✔ connected as '+found.account_id;st.style.color='var(--green)'}const dm=document.getElementById('dialogMsg');if(dm)dm.innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(found.account_id)+'</strong>.</div>';if(s)s.textContent='Connected as '+found.account_id;toast('Google account connected');loadDeviceAccounts()}else if(Date.now()-start>300000){clearInterval(iv);const st=document.getElementById('googleWait');if(st){st.textContent='✕ timed out — restart login';st.style.color='var(--red)'}}}catch(e){}},2000)}
 async function loadDeviceAccounts(){const el=document.getElementById('deviceAccounts');if(!el)return;try{const r=await fetch('/api/device/accounts');if(!r.ok)return;const d=await r.json();if(!d.accounts||!d.accounts.length){el.innerHTML='<div style="font-size:.8rem;color:var(--fg3)">No device accounts connected.</div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Connected device accounts</div>'+d.accounts.map(a=>'<div class="key-row"><div class="masked">'+esc(a.provider)+' · '+esc(a.account_id)+'</div></div>').join('')}catch(e){}}
 
 // ══ MODELS ══
-function populateFetchSelect(){const s=document.getElementById('fetchProvider'),pv=s.value;s.innerHTML='';Object.keys(S.providers).forEach(id=>{const o=document.createElement('option');o.value=id;o.textContent=id+(S.providers[id].keys.length?'':' (no keys)');s.appendChild(o)});if(pv&&S.providers[pv])s.value=pv}
+function populateFetchSelect(){
+  const opts=Object.keys(S.providers).map(k=>({value:k,label:k+(S.providers[k].keys.length?'':' (no keys)')}));
+  if(!fetchProviderValue&&opts.length)fetchProviderValue=opts[0].value;
+  createCustomSelect('fetchProviderSelect',opts,fetchProviderValue,v=>{fetchProviderValue=v},false);
+  createCustomSelect('fetchTypeSelect',[{value:'text',label:'Text (chat)'},{value:'images',label:'Images'},{value:'all',label:'All'}],fetchTypeValue,v=>{fetchTypeValue=v},false);
+  createCustomSelect('customKindSelect',[{value:'openai-compat',label:'OpenAI-compatible'},{value:'anthropic',label:'Anthropic'}],customKindValue,v=>{customKindValue=v},false);
+  createCustomSelect('deviceProviderSelect',[{value:'kiro',label:'kiro'},{value:'antigravity',label:'antigravity'}],deviceProviderValue,v=>{deviceProviderValue=v},false);
+}
 function initFetchModels(){document.getElementById('fetchModelsBtn').addEventListener('click',fetchModels);document.getElementById('modelSearch').addEventListener('input',filterModels);
 document.querySelectorAll('#freeToggle button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#freeToggle button').forEach(x=>x.classList.remove('active'));b.classList.add('active');S.freeOnly=(b.dataset.mode==='free');filterModels()}));
 document.getElementById('selectAllBtn').addEventListener('click',()=>{document.querySelectorAll('#modelList input[type="checkbox"]').forEach(c=>{c.checked=true;S.selectedModels.add(c.dataset.id)})});
@@ -438,7 +583,7 @@ document.getElementById('confirmModelsBtn').addEventListener('click',confirmMode
 function initModelSubTabs(){document.querySelectorAll('#modelSubTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#modelSubTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const sub=b.dataset.sub;document.getElementById('subFetched').classList.toggle('active',sub==='fetched');document.getElementById('subBuiltin').classList.toggle('active',sub==='builtin')}))}
 
 function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.includes('(free)')||n.endsWith('-free')||n.endsWith(':free')||n.includes('-free-')}
- async function fetchModels(){const pid=document.getElementById('fetchProvider').value,ftype=document.getElementById('fetchType').value;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
+ async function fetchModels(){const pid=fetchProviderValue,ftype=fetchTypeValue;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
   const btn=document.getElementById('fetchModelsBtn');btn.disabled=true;btn.innerHTML=`Fetching<span class="dots"><span></span><span></span><span></span></span>`;
   try{const r=await fetch('/api/models/fetch?provider='+encodeURIComponent(pid));const d=await r.json();
    if(d.error){showModal('Model fetch failed',d.error);return}
@@ -450,7 +595,7 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
    S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];document.getElementById('modelArea').style.display='';document.getElementById('modelHint').style.display='none';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
   catch(e){showModal('Model fetch failed',e.message)}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
 
-function filterModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=document.getElementById('fetchProvider').value,models=S.modelCache[pid]||[],list=document.getElementById('modelList');list.innerHTML='';let cnt=0;
+function filterModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=fetchProviderValue,models=S.modelCache[pid]||[],list=document.getElementById('modelList');list.innerHTML='';let cnt=0;
 const all=[...models.filter(m=>!S.freeOnly||(m.free===true||isFree(m.id))).filter(m=>!q||m.id.toLowerCase().includes(q)||(m.owned_by||'').toLowerCase().includes(q)).map(m=>({...m,type:(m.free===true||isFree(m.id))?'free':'paid'})),...S.customModels.filter(id=>!q||id.toLowerCase().includes(q)).map(id=>({id,type:'custom'}))];
  all.forEach(m=>{cnt++;const it=document.createElement('div');it.className='model-item';
  const imgTag=m.image?'<span class="free-tag" style="background:rgba(236,72,153,.12);color:#ec4899">IMG</span>':'';
@@ -462,23 +607,31 @@ async function confirmModels(){if(!S.selectedModels.size){toast('Select at least
 const tn=await openDialog({type:'prompt',title:'Save to tier',msg:'Create a new tier or append to an existing one. Enter a tier name:',inputValue:'my-tier',confirmText:'Save'});
 if(!tn)return;
 if(!/^[A-Za-z0-9_-]+$/.test(tn)){toast('Tier name may only use letters, numbers, - and _',true);return}
-const pid=document.getElementById('fetchProvider').value;
+const pid=fetchProviderValue;
 const entries=[...S.selectedModels].map((m,i)=>({provider:pid,model:m,is_default:i===0}));
-const ex=S.tiers.find(t=>t.name===tn);if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}
-else S.tiers.push({name:tn,entries});
-await persist();renderSavedModels();renderTiers();toast(S.selectedModels.size+' models → tier "'+tn+'"');updateSteps()}
+const ex=S.tiers.find(t=>t.name===tn);
+const createdNew=!ex;
+const prevLen=ex?ex.entries.length:0;
+if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}else S.tiers.push({name:tn,entries});
+const r=await persist();
+if(!r.ok){
+  showModal('Could not save tier',r.error);
+  if(createdNew){const idx=S.tiers.findIndex(t=>t.name===tn);if(idx>=0)S.tiers.splice(idx,1)}
+  else if(ex){ex.entries.length=prevLen}
+  return;
+}
+ renderSavedModels();renderTiers();toast(S.selectedModels.size+' models → tier "'+tn+'" ✓ (verified)');updateSteps()}
 
 // ══ TIERS ══
-function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S.tiers.push({name:n,entries:[]});await persist();renderSavedModels();renderTiers();toast('Tier "'+n+'" created')})}
+function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S.tiers.push({name:n,entries:[]});const r=await persist();if(!r.ok){const idx=S.tiers.findIndex(t=>t.name===n);if(idx>=0)S.tiers.splice(idx,1);showModal('Could not create tier',r.error);return}renderSavedModels();renderTiers();toast('Tier "'+n+'" created ✓ (verified)')})}
 
 function renderTiers(){const l=document.getElementById('tierList'),e=document.getElementById('tierEmpty');l.innerHTML='';if(!S.tiers.length){e.style.display='';return}e.style.display='none';
 S.tiers.forEach((tier,ti)=>{const c=document.createElement('div');c.className='tier-card';c.draggable=true;c.dataset.idx=ti;
-let eh='';tier.entries.forEach((en,ei)=>{eh+=`<div class="tier-entry"><select class="entry-provider" data-ti="${ti}" data-ei="${ei}">${Object.keys(S.providers).map(p=>`<option value="${esc(p)}" ${p===en.provider?'selected':''}>${esc(p)}</option>`).join('')}</select><input type="text" class="entry-model" value="${esc(en.model)}" data-ti="${ti}" data-ei="${ei}" placeholder="model id"><button class="remove-entry" data-ti="${ti}" data-ei="${ei}" title="Remove"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`});
-c.innerHTML=`<div class="tier-header"><div class="grip" title="Drag to reorder"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg></div><input class="tier-name" value="${esc(tier.name)}" data-ti="${ti}" placeholder="Tier name"><span class="tier-count">${tier.entries.length} entr${tier.entries.length!==1?'ies':'y'}</span><button class="btn btn-secondary btn-sm add-entry-btn" data-ti="${ti}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Entry</button><button class="btn btn-danger btn-sm delete-tier-btn" data-ti="${ti}" style="padding:6px 10px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div><div class="tier-entries">${eh}</div>`;
+let eh='';tier.entries.forEach((en,ei)=>{eh+=`<div class="tier-entry"><div class="custom-select tier-provider-select" data-ti="${ti}" data-ei="${ei}"></div><input type="text" class="entry-model" value="${esc(en.model)}" data-ti="${ti}" data-ei="${ei}" placeholder="model id"><button class="remove-entry" data-ti="${ti}" data-ei="${ei}" title="Remove"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`});
+c.innerHTML=`<div class="tier-header"><div class="grip" title="Drag to reorder">⠿</div><input class="tier-name" value="${esc(tier.name)}" data-ti="${ti}" placeholder="Tier name"><span class="tier-count">${tier.entries.length} entr${tier.entries.length!==1?'ies':'y'}</span><button class="btn btn-secondary btn-sm add-entry-btn" data-ti="${ti}">+ Entry</button><button class="btn btn-danger btn-sm delete-tier-btn" data-ti="${ti}" style="padding:6px 10px">✕</button></div><div class="tier-entries">${eh}</div>`;
 c.querySelector('.tier-name').addEventListener('change',e=>{S.tiers[ti].name=e.target.value.trim()||S.tiers[ti].name;saveState()});
 c.querySelector('.add-entry-btn').addEventListener('click',()=>{S.tiers[ti].entries.push({provider:Object.keys(S.providers)[0]||'opencode-zen',model:'',is_default:false});saveState();renderTiers()});
 c.querySelector('.delete-tier-btn').addEventListener('click',async()=>{const ok=await openDialog({type:'confirm',title:'Delete tier',msg:'Delete tier "'+esc(S.tiers[ti].name)+'"? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;S.tiers.splice(ti,1);saveState();renderTiers();updateSteps();toast('Tier deleted')});
-c.querySelectorAll('.entry-provider').forEach(s=>s.addEventListener('change',e=>{S.tiers[ti].entries[parseInt(e.target.dataset.ei)].provider=e.target.value;saveState()}));
 c.querySelectorAll('.entry-model').forEach(inp=>inp.addEventListener('change',e=>{S.tiers[ti].entries[parseInt(e.target.dataset.ei)].model=e.target.value;saveState()}));
 c.querySelectorAll('.remove-entry').forEach(b=>b.addEventListener('click',()=>{S.tiers[ti].entries.splice(parseInt(b.dataset.ei),1);saveState();renderTiers()}));
 c.addEventListener('dragstart',e=>{c.classList.add('dragging');e.dataTransfer.setData('text/plain',ti);e.dataTransfer.effectAllowed='move'});
@@ -486,7 +639,8 @@ c.addEventListener('dragend',()=>c.classList.remove('dragging'));
 c.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='move';c.classList.add('drag-over')});
 c.addEventListener('dragleave',()=>c.classList.remove('drag-over'));
  c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
- l.appendChild(c)});renderSavedModels()}
+ l.appendChild(c);const pOpts=Object.keys(S.providers).map(p=>({value:p,label:p}));
+ tier.entries.forEach((en,ei)=>{const sel=c.querySelector('[data-ti="'+ti+'"][data-ei="'+ei+'"].tier-provider-select');if(sel)createCustomSelect(sel,pOpts,en.provider,v=>{S.tiers[ti].entries[ei].provider=v;saveState()},false)});});renderSavedModels()}
 
 // ══ SAVED / BUILTIN MODELS ══
 function renderSavedModels(){const el=document.getElementById('builtinModels');if(!el)return;const seen=new Set(),ch=[];S.tiers.forEach(t=>t.entries.forEach(e=>{const k=e.provider+'/'+e.model;if(!seen.has(k)){seen.add(k);ch.push(e)}}));if(!ch.length){el.innerHTML='<div class="empty-state" style="padding:30px 10px"><p>No saved or built-in models yet. Add models to a tier first.</p></div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:10px;font-weight:500">Saved / built-in models</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+ch.map(c=>'<span class="model-chip">'+esc(c.provider)+'/'+esc(c.model)+'</span>').join('')+'</div>'}
@@ -503,16 +657,29 @@ const tb=document.getElementById('errorTableBody');tb.innerHTML='';(d.recent_err
 tr.innerHTML=`<td style="font-family:var(--mono);font-size:.78rem;white-space:nowrap">${esc(e.time||'—')}</td><td>${esc(e.tier||'—')}</td><td>${esc(e.provider||'—')}</td><td class="${e.status>=400?'status-err':'status-ok'}">${e.status||'—'}</td><td style="font-family:var(--mono);font-size:.82rem">${e.latency_ms?e.latency_ms.toFixed(0)+'ms':'—'}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg3)">${esc(e.message||'')}</td>`;tb.appendChild(tr)})}
 
 function drawChart(id,pts,label,stroke,fill){const c=document.getElementById(id);if(!c)return;const ctx=c.getContext('2d'),dpr=devicePixelRatio||1,r=c.parentElement.getBoundingClientRect();
-c.width=r.width*dpr;c.height=260*dpr;c.style.width=r.width+'px';c.style.height='260px';ctx.scale(dpr,dpr);const W=r.width,H=260,p={t:20,r:20,b:30,l:50},cW=W-p.l-p.r,cH=H-p.t-p.b;ctx.clearRect(0,0,W,H);
+c.width=r.width*dpr;c.height=260*dpr;c.style.width=r.width+'px';c.style.height='260px';ctx.scale(dpr,dpr);const W=r.width,H=260,P={t:20,r:20,b:30,l:50},cW=W-P.l-P.r,cH=H-P.t-P.b;ctx.clearRect(0,0,W,H);
 if(!pts.length){ctx.fillStyle='#71717a';ctx.font='13px system-ui';ctx.textAlign='center';ctx.fillText('No data yet',W/2,H/2);return}
 const vals=pts.map(v=>typeof v==='number'?v:(v.value||v.y||0)),mx=Math.max(...vals)*1.15||1,n=vals.length;
-ctx.strokeStyle='#2a2a32';ctx.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(cH/4)*i;ctx.beginPath();ctx.moveTo(p.l,y);ctx.lineTo(W-p.r,y);ctx.stroke();ctx.fillStyle='#71717a';ctx.font='10px system-ui';ctx.textAlign='right';ctx.fillText((mx-(mx/4)*i).toFixed(0),p.l-8,y+3)}
-if(n>1){ctx.fillStyle='#71717a';ctx.font='10px system-ui';ctx.textAlign='center';const step=Math.max(1,Math.floor(n/6));for(let i=0;i<n;i+=step){const x=p.l+(cW/(n-1))*i;ctx.fillText(String(pts[i]?.label||pts[i]?.time||i).slice(-5),x,H-8)}}
-ctx.beginPath();ctx.moveTo(p.l,p.t+cH);vals.forEach((v,i)=>{const x=p.l+(n>1?(cW/(n-1))*i:cW/2),y=p.t+cH-(v/mx)*cH;ctx.lineTo(x,y)});ctx.lineTo(p.l+cW,p.t+cH);ctx.closePath();
-const g=ctx.createLinearGradient(0,p.t,0,p.t+cH);g.addColorStop(0,fill);g.addColorStop(1,'transparent');ctx.fillStyle=g;ctx.fill();
-ctx.beginPath();vals.forEach((v,i)=>{const x=p.l+(n>1?(cW/(n-1))*i:cW/2),y=p.t+cH-(v/mx)*cH;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.lineJoin='round';ctx.stroke();
-const lx=p.l+(n>1?cW:cW/2),ly=p.t+cH-(vals[n-1]/mx)*cH;ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);ctx.fillStyle=stroke;ctx.fill();
-ctx.beginPath();ctx.arc(lx,ly,7,0,Math.PI*2);ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.globalAlpha=.3;ctx.stroke();ctx.globalAlpha=1}
+ctx.strokeStyle='#2a2a32';ctx.lineWidth=1;for(let i=0;i<=4;i++){const y=P.t+(cH/4)*i;ctx.beginPath();ctx.moveTo(P.l,y);ctx.lineTo(W-P.r,y);ctx.stroke();ctx.fillStyle='#71717a';ctx.font='10px system-ui';ctx.textAlign='right';ctx.fillText((mx-(mx/4)*i).toFixed(0),P.l-8,y+3)}
+if(n>1){ctx.fillStyle='#71717a';ctx.font='10px system-ui';ctx.textAlign='center';const step=Math.max(1,Math.floor(n/6));for(let i=0;i<n;i+=step){const x=P.l+(cW/(n-1))*i;ctx.fillText(String(pts[i]?.label||pts[i]?.time||i).slice(-5),x,H-8)}}
+ctx.beginPath();ctx.moveTo(P.l,P.t+cH);vals.forEach((v,i)=>{ctx.lineTo(P.l+(n>1?(cW/(n-1))*i:cW/2),P.t+cH-(v/mx)*cH)});ctx.lineTo(P.l+cW,P.t+cH);ctx.closePath();
+const g=ctx.createLinearGradient(0,P.t,0,P.t+cH);g.addColorStop(0,fill);g.addColorStop(1,'transparent');ctx.fillStyle=g;ctx.fill();
+  ctx.beginPath();vals.forEach((v,i)=>{const x=P.l+(n>1?(cW/(n-1))*i:cW/2),y=P.t+cH-(v/mx)*cH;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.lineJoin='round';ctx.stroke();
+  const lx=P.l+(n>1?cW:cW/2),ly=P.t+cH-(vals[n-1]/mx)*cH;ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);ctx.fillStyle=stroke;ctx.fill();ctx.beginPath();ctx.arc(lx,ly,7,0,Math.PI*2);ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.globalAlpha=.3;ctx.stroke();ctx.globalAlpha=1}
+
+// ══ ROUTER ACCESS (API key) ══
+function initRouterAccess(){const g=document.getElementById('genKeyBtn'),d=document.getElementById('disableKeyBtn');if(g)g.onclick=generateApiKey;if(d)d.onclick=disableApiKey;loadAuthStatus()}
+async function loadAuthStatus(){const el=document.getElementById('authBadge'),hint=document.getElementById('authHint');if(!el)return;try{const r=await fetch('/api/auth/status');if(!r.ok)return;const d=await r.json();if(d.enabled){el.textContent='Enabled';el.style.background='rgba(34,197,94,.12)';el.style.color='var(--green)';hint.textContent='Router requires a Bearer token.';if(document.getElementById('disableKeyBtn'))document.getElementById('disableKeyBtn').disabled=false}else{el.textContent='Disabled';el.style.background='rgba(113,113,122,.15)';el.style.color='var(--fg3)';hint.textContent='Open access — no auth required.'}}catch(e){}}
+async function verifyAuthEnabled(expected){try{const r=await fetch('/api/auth/status');if(!r.ok)return false;const d=await r.json();return !!d.enabled===expected;}catch(e){return false}}
+async function generateApiKey(){try{const r=await fetch('/api/auth/enable',{method:'POST'});const d=await r.json();if(d.error){showModal('Failed to enable',d.error);return}if(!d.token){showModal('Failed to enable','No token returned');return}showApiKeyModal(d.token);const verified=await verifyAuthEnabled(true);if(!verified){showModal('Auth enable verification failed','The key was generated but could not be confirmed active. Check the router config.');return}loadAuthStatus();try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}}catch(e){showModal('Failed to enable',e.message)}}
+async function disableApiKey(){const ok=await openDialog({type:'confirm',title:'Disable router auth',msg:'This removes the API key and makes the router open access (no auth). Continue?',confirmText:'Disable',cancelText:'Cancel'});if(!ok)return;try{const r=await fetch('/api/auth/disable',{method:'POST'});const d=await r.json();if(d.error){showModal('Failed to disable',d.error);return}const verified=await verifyAuthEnabled(false);if(!verified){showModal('Auth disable verification failed','The key may not have been removed. Check the router config.');return}toast('Router auth disabled');loadAuthStatus();try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}}catch(e){showModal('Failed to disable',e.message)}}
+function showApiKeyModal(token){const msg='<div style="font-size:.82rem;color:var(--fg2);margin-bottom:10px">Your router API key (shown <strong>only once</strong>). Store it now — it will not be displayed again in full.</div>'+
+  '<div id="apiKeyBox" style="font-family:var(--mono);font-size:.85rem;background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--radius-xs);padding:12px 14px;word-break:break-all;color:var(--fg);margin-bottom:12px">'+esc(token)+'</div>'+
+  '<div style="display:flex;gap:10px;align-items:center"><button id="copyKeyBtn" class="btn btn-secondary btn-sm">Copy key</button><span id="copyKeyMsg" style="font-size:.8rem;color:var(--green)"></span></div>'+
+  '<div style="margin-top:12px;font-size:.78rem;color:var(--amber)">⚠ Clients must send: <code style="background:var(--bg4);padding:2px 8px;border-radius:4px;font-family:var(--mono)">Authorization: Bearer '+esc(token.slice(0,8))+'…</code></div>';
+  openDialog({type:'alert',title:'Router API key generated',msg:msg,confirmText:'Done'});
+  const cb=document.getElementById('copyKeyBtn');if(cb)cb.onclick=()=>{navigator.clipboard.writeText(token).then(()=>{const m=document.getElementById('copyKeyMsg');if(m)m.textContent='Copied!'}).catch(()=>{const m=document.getElementById('copyKeyMsg');if(m)m.textContent='Copy failed — select manually'})}}
+
 </script>
 </body>
 </html>

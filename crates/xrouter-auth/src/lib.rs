@@ -1,14 +1,25 @@
 //! xrouter-auth — off-RAM device-login token store and helpers.
 //!
-//! This crate owns everything related to the OAuth2 *device authorization
-//! grant* flow used by device-kind providers (`kiro`, `antigravity`, and the
-//! generic `device:<name>` form). Secrets (access/refresh tokens) live here in
-//! a separate, 0600-on-disk store so they never enter the main `Config`
-//! (which only carries non-secret account metadata).
+//! This crate owns everything related to the OAuth2 login flows used by
+//! device-kind providers (`kiro`, `antigravity`, and the generic `device:<name>`
+//! form). Secrets (access/refresh tokens) live here in a separate, 0600-on-disk
+//! store so they never enter the main `Config` (which only carries non-secret
+//! account metadata).
 //!
 //! The crate is intentionally tiny and dependency-light: it is linked into the
 //! server, balancer, config and CLI crates but performs no work unless a
 //! device-kind provider is actually configured (see `is_device_kind`).
+//!
+//! ## Login flows
+//!
+//! * `kiro` (AWS Builder ID) — standard OAuth2 **device authorization** grant
+//!   against the AWS SSO OIDC endpoints (`oidc.<region>.amazonaws.com`). The
+//!   flow is: dynamic client registration → device authorization → poll token.
+//! * `antigravity` (Google) — **PKCE authorization-code** grant with a loopback
+//!   redirect. Google does *not* support the device-code grant for these
+//!   clients, so we build a consent URL (with `code_challenge_method=S256`),
+//!   the caller opens it in a browser, and a local HTTP listener receives the
+//!   `?code` callback which we exchange for tokens.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,6 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// Provider names that authenticate via the device-login flow.
 pub const DEVICE_PROVIDERS: &[&str] = &["kiro", "antigravity"];
@@ -71,6 +83,14 @@ pub struct DeviceAccountConfig {
     pub refresh_token: Option<String>,
     /// Absolute expiry of `access_token`. `None` means "unknown / never".
     pub expires_at: Option<SystemTime>,
+    /// OAuth client id issued at login (kiro: from dynamic registration;
+    /// antigravity: the public Google client id). Needed for token refresh.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// OAuth client secret (kiro: from dynamic registration; antigravity: the
+    /// public Google client secret). Needed for token refresh.
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 impl DeviceAccountConfig {
@@ -208,12 +228,19 @@ pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
     };
     let token_url = token_endpoint(&acct.provider);
     let client = reqwest::Client::new();
+    let mut form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.clone()),
+    ];
+    if let Some(cid) = &acct.client_id {
+        form.push(("client_id", cid.clone()));
+    }
+    if let Some(csec) = &acct.client_secret {
+        form.push(("client_secret", csec.clone()));
+    }
     let resp = client
         .post(&token_url)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.as_str()),
-        ])
+        .form(&form)
         .send()
         .await
         .context("device token refresh request")?;
@@ -246,8 +273,10 @@ pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
     Ok(())
 }
 
-/// In-progress device login, returned by [`initiate_device_login`] and polled
-/// by [`poll_device_login`].
+// ── Kiro (AWS Builder ID) device-authorization flow ───────────────────────────
+
+/// In-progress kiro device login, returned by [`initiate_device_login`] and
+/// polled by [`poll_device_login`].
 #[derive(Debug, Clone)]
 pub struct DeviceLoginInit {
     pub provider: String,
@@ -255,62 +284,162 @@ pub struct DeviceLoginInit {
     pub display: String,
     pub device_code: String,
     pub user_code: String,
+    /// `verification_uri_complete` (one-click) when available, else the bare
+    /// `verification_uri`.
     pub verification_uri: String,
+    /// `verification_uri_complete` exactly as returned by AWS (one-click link).
+    pub verification_uri_complete: String,
     pub interval: u64,
+    /// OAuth client id issued by AWS during dynamic registration.
+    pub client_id: String,
+    /// OAuth client secret issued by AWS during dynamic registration.
+    pub client_secret: String,
 }
 
-/// Begin a device authorization flow. Returns the verification URI + user code
-/// the human must visit, plus the `device_code` used while polling.
+/// Begin a device authorization flow for `provider`.
+///
+/// * `kiro` — AWS SSO OIDC device flow (register → device_authorization).
+/// * `antigravity` — not a device-code flow; callers must use
+///   [`build_google_auth_url`] + [`complete_google_login`] instead. This
+///   returns a clear error directing to that flow.
 pub async fn initiate_device_login(
     provider: &str,
     account: &str,
     display: &str,
 ) -> Result<DeviceLoginInit> {
-    let url = device_auth_endpoint(provider);
+    let prov = normalize_provider(provider);
+    match prov {
+        "kiro" => initiate_kiro_login(account, display).await,
+        "antigravity" => anyhow::bail!(
+            "antigravity uses a PKCE browser flow, not device-code; call build_google_auth_url()"
+        ),
+        other => anyhow::bail!(
+            "unsupported device provider '{}' (supported: kiro, antigravity)",
+            other
+        ),
+    }
+}
+
+/// AWS SSO OIDC dynamic client registration. Returns `(client_id, client_secret)`.
+async fn kiro_register_client(region: &str) -> Result<(String, String)> {
+    let url = kiro_register_endpoint(region);
     let client = reqwest::Client::new();
     let resp = client
         .post(&url)
         .form(&[
-            ("client_id", client_id(provider)),
-            ("scope", scope_for(provider).to_string()),
-            ("account", account.to_string()),
+            ("clientName", "xrouter"),
+            ("clientType", "public"),
+            ("scopes", "openid profile"),
         ])
         .send()
         .await
-        .context("device auth request")?;
+        .context("kiro client register request")?;
     let status = resp.status();
     if !status.is_success() {
         let txt = resp.text().await.unwrap_or_default();
-        anyhow::bail!("device auth init failed ({}): {}", status, txt);
+        anyhow::bail!("kiro client register failed ({}): {}", status, txt);
     }
-    let v: serde_json::Value = resp.json().await.context("parse device auth response")?;
-    let init = DeviceLoginInit {
-        provider: provider.to_string(),
-        account: account.to_string(),
-        display: display.to_string(),
-        device_code: v
-            .get("device_code")
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        user_code: v
-            .get("user_code")
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        verification_uri: v
-            .get("verification_uri")
-            .or_else(|| v.get("verification_url"))
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        interval: v.get("interval").and_then(|x| x.as_u64()).unwrap_or(5),
-    };
+    let v: serde_json::Value = resp.json().await.context("parse kiro register response")?;
+    let client_id = v
+        .get("clientId")
+        .or_else(|| v.get("client_id"))
+        .and_then(|x| x.as_str())
+        .context("kiro register response missing clientId")?
+        .to_string();
+    let client_secret = v
+        .get("clientSecret")
+        .or_else(|| v.get("client_secret"))
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok((client_id, client_secret))
+}
+
+/// AWS SSO OIDC device authorization. Returns the device code + verification
+/// URI the human must visit.
+async fn kiro_device_authorization(
+    region: &str,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<DeviceLoginInit> {
+    let url = kiro_device_auth_endpoint(region);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .form(&[
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("startUrl", "https://view.awsapps.com/start"),
+            ("scopes", "openid profile"),
+        ])
+        .send()
+        .await
+        .context("kiro device auth request")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let txt = resp.text().await.unwrap_or_default();
+        anyhow::bail!("kiro device auth failed ({}): {}", status, txt);
+    }
+    let v: serde_json::Value = resp.json().await.context("parse kiro device auth response")?;
+    let device_code = v
+        .get("deviceCode")
+        .or_else(|| v.get("device_code"))
+        .and_then(|x| x.as_str())
+        .context("kiro device auth response missing deviceCode")?
+        .to_string();
+    let user_code = v
+        .get("userCode")
+        .or_else(|| v.get("user_code"))
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let verification_uri_complete = v
+        .get("verificationUriComplete")
+        .or_else(|| v.get("verification_uri_complete"))
+        .and_then(|x| x.as_str())
+        .or_else(|| {
+            v.get("verificationUri")
+                .or_else(|| v.get("verification_uri"))
+                .and_then(|x| x.as_str())
+        })
+        .unwrap_or_default()
+        .to_string();
+    let verification_uri = v
+        .get("verificationUri")
+        .or_else(|| v.get("verification_uri"))
+        .and_then(|x| x.as_str())
+        .unwrap_or(&verification_uri_complete)
+        .to_string();
+    let interval = v
+        .get("interval")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(5);
+    Ok(DeviceLoginInit {
+        provider: "kiro".to_string(),
+        account: String::new(),
+        display: String::new(),
+        device_code,
+        user_code,
+        verification_uri,
+        verification_uri_complete,
+        interval,
+        client_id: client_id.to_string(),
+        client_secret: client_secret.to_string(),
+    })
+}
+
+/// Begin the kiro device login: register a client, then request a device code.
+async fn initiate_kiro_login(account: &str, display: &str) -> Result<DeviceLoginInit> {
+    let region = kiro_region();
+    let (client_id, client_secret) = kiro_register_client(&region).await?;
+    let mut init = kiro_device_authorization(&region, &client_id, &client_secret).await?;
+    init.account = account.to_string();
+    init.display = display.to_string();
     Ok(init)
 }
 
-/// Poll the token endpoint until the user completes the device login or the
-/// flow errors out. Returns the populated [`DeviceAccountConfig`].
+/// Poll the kiro token endpoint until the user completes the device login or
+/// the flow errors out. Returns the populated [`DeviceAccountConfig`].
 pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountConfig> {
     let url = token_endpoint(&init.provider);
     let client = reqwest::Client::new();
@@ -319,16 +448,20 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
         if SystemTime::now() > deadline {
             anyhow::bail!("device login timed out");
         }
+        let mut form = vec![
+            (
+                "grant_type".to_string(),
+                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+            ),
+            ("device_code".to_string(), init.device_code.clone()),
+            ("client_id".to_string(), init.client_id.clone()),
+        ];
+        if !init.client_secret.is_empty() {
+            form.push(("client_secret".to_string(), init.client_secret.clone()));
+        }
         let resp = client
             .post(&url)
-            .form(&[
-                (
-                    "grant_type",
-                    "urn:ietf:params:oauth:grant-type:device_code",
-                ),
-                ("device_code", init.device_code.as_str()),
-                ("client_id", client_id(&init.provider).as_str()),
-            ])
+            .form(&form)
             .send()
             .await
             .context("device token poll")?;
@@ -336,16 +469,19 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
         let v: serde_json::Value = resp.json().await.context("parse token poll response")?;
         if status.is_success() {
             let access_token = v
-                .get("access_token")
+                .get("accessToken")
+                .or_else(|| v.get("access_token"))
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_string();
             let refresh_token = v
-                .get("refresh_token")
+                .get("refreshToken")
+                .or_else(|| v.get("refresh_token"))
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string());
             let expires_at = v
-                .get("expires_in")
+                .get("expiresIn")
+                .or_else(|| v.get("expires_in"))
                 .and_then(|x| x.as_u64())
                 .map(|s| SystemTime::now() + Duration::from_secs(s));
             // Derive the account identity directly from the signed-in provider
@@ -367,6 +503,8 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
                 access_token,
                 refresh_token,
                 expires_at,
+                client_id: Some(init.client_id.clone()),
+                client_secret: Some(init.client_secret.clone()),
             });
         }
         let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
@@ -381,7 +519,149 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
     }
 }
 
-// --- identity derivation (no manual account_id required) --------------------
+// ── Antigravity (Google) PKCE authorization-code flow ─────────────────────────
+
+/// State for an in-progress Google PKCE login. The caller opens [`auth_url`] in
+/// a browser; the loopback `redirect_uri` receives `?code=...`, which is passed
+/// to [`complete_google_login`] together with this struct (which holds the
+/// `code_verifier` needed to exchange the code).
+#[derive(Debug, Clone)]
+pub struct GoogleLoginInit {
+    /// Fully-built Google consent URL (with PKCE challenge + redirect_uri).
+    pub auth_url: String,
+    /// PKCE code verifier (kept server-side; never sent to Google in the URL).
+    pub code_verifier: String,
+    /// Loopback redirect URI the browser is sent back to after consent.
+    pub redirect_uri: String,
+    /// CSRF/`state` value echoed back by Google and verified on callback.
+    pub state: String,
+}
+
+/// Build the Google consent URL for the PKCE authorization-code flow.
+///
+/// `redirect_uri` must be a loopback URL (e.g. `http://localhost:3001/oauth/callback`)
+/// that the caller is listening on. The returned [`GoogleLoginInit`] carries the
+/// `code_verifier` + `state` needed to complete the exchange.
+pub fn build_google_auth_url(redirect_uri: &str) -> GoogleLoginInit {
+    let code_verifier = pkce_verifier();
+    let code_challenge = pkce_challenge(&code_verifier);
+    let state = random_url_safe(16);
+    let scope = "https://www.googleapis.com/auth/cloud-platform \
+                 https://www.googleapis.com/auth/userinfo.email \
+                 https://www.googleapis.com/auth/userinfo.profile";
+    let mut url = Url::parse(&google_auth_url()).expect("valid google auth url");
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("client_id", &google_client_id());
+        q.append_pair("redirect_uri", redirect_uri);
+        q.append_pair("response_type", "code");
+        q.append_pair("scope", scope);
+        q.append_pair("access_type", "offline");
+        q.append_pair("prompt", "consent");
+        q.append_pair("code_challenge", &code_challenge);
+        q.append_pair("code_challenge_method", "S256");
+        q.append_pair("state", &state);
+    }
+    GoogleLoginInit {
+        auth_url: url.to_string(),
+        code_verifier,
+        redirect_uri: redirect_uri.to_string(),
+        state,
+    }
+}
+
+/// Exchange the `code` returned by Google's loopback redirect for tokens, derive
+/// the account identity (email via userinfo), and return a populated
+/// [`DeviceAccountConfig`].
+pub async fn complete_google_login(init: &GoogleLoginInit, code: &str) -> Result<DeviceAccountConfig> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(google_token_url())
+        .form(&[
+            ("client_id", google_client_id()),
+            ("client_secret", google_client_secret()),
+            ("code", code.to_string()),
+            ("code_verifier", init.code_verifier.clone()),
+            ("grant_type", "authorization_code".to_string()),
+            ("redirect_uri", init.redirect_uri.clone()),
+        ])
+        .send()
+        .await
+        .context("google token exchange request")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let txt = resp.text().await.unwrap_or_default();
+        anyhow::bail!("google token exchange failed ({}): {}", status, txt);
+    }
+    let v: serde_json::Value = resp.json().await.context("parse google token response")?;
+    let access_token = v
+        .get("access_token")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let refresh_token = v
+        .get("refresh_token")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let expires_at = v
+        .get("expires_in")
+        .and_then(|x| x.as_u64())
+        .map(|s| SystemTime::now() + Duration::from_secs(s));
+    // Google's token response does not include the email; fetch it from the
+    // userinfo endpoint so we can key the account by email.
+    let identity = match v
+        .get("email")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => s.to_string(),
+        None => derive_antigravity_identity(&access_token).await,
+    };
+    Ok(DeviceAccountConfig {
+        account_id: identity.clone(),
+        display_name: Some(identity.clone()),
+        provider: "antigravity".to_string(),
+        access_token,
+        refresh_token,
+        expires_at,
+        client_id: Some(google_client_id()),
+        client_secret: Some(google_client_secret()),
+    })
+}
+
+// ── PKCE helpers ──────────────────────────────────────────────────────────────
+
+/// Generate a 32-byte random PKCE code verifier, base64url (no padding).
+fn pkce_verifier() -> String {
+    base64_url_no_pad(&rand::random::<[u8; 32]>())
+}
+
+/// Derive the S256 PKCE code challenge from a verifier (SHA-256, base64url no
+/// padding).
+fn pkce_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    base64_url_no_pad(&hasher.finalize())
+}
+
+/// `n` random bytes, base64url (no padding) — used for the OAuth `state`.
+fn random_url_safe(n: usize) -> String {
+    let mut bytes = vec![0u8; n];
+    let r: [u8; 32] = rand::random();
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = r[i % 32];
+    }
+    base64_url_no_pad(&bytes)
+}
+
+fn base64_url_no_pad(bytes: &[u8]) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+// ── identity derivation (no manual account_id required) ───────────────────────
 
 /// Derive a stable account identity from the signed-in provider account.
 ///
@@ -414,7 +694,7 @@ async fn derive_antigravity_identity(access_token: &str) -> String {
 async fn google_userinfo(access_token: &str) -> Option<String> {
     let client = reqwest::Client::new();
     let resp = client
-        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .get(google_userinfo_endpoint())
         .header(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", access_token),
@@ -474,7 +754,7 @@ async fn kiro_userinfo(access_token: &str) -> Option<String> {
 }
 
 fn kiro_userinfo_endpoint() -> String {
-    "https://api.kiro.dev/oauth/userinfo".to_string()
+    format!("https://oidc.{}.amazonaws.com/userinfo", kiro_region())
 }
 
 /// Decode the payload of a JWT (base64url, no signature verification) into a
@@ -506,43 +786,57 @@ fn short_token_hash(token: &str) -> String {
     s
 }
 
-// --- provider-specific endpoints (placeholders; real hosts filled by config) --
+// ── provider-specific endpoints (env-overridable) ─────────────────────────────
 
 fn store_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".local/share/xrouter/device-store.json")
 }
 
-fn device_auth_endpoint(provider: &str) -> String {
-    match provider {
-        "kiro" => "https://api.kiro.dev/oauth/device".to_string(),
-        "antigravity" => "https://api.cline.bot/oauth/device".to_string(),
-        other => format!("https://{}.invalid/oauth/device", other),
-    }
+fn kiro_region() -> String {
+    std::env::var("KIRO_REGION").unwrap_or_else(|_| "us-east-1".to_string())
+}
+
+fn kiro_register_endpoint(region: &str) -> String {
+    std::env::var("XROUTER_KIRO_REGISTER_URL")
+        .unwrap_or_else(|_| format!("https://oidc.{}.amazonaws.com/client/register", region))
+}
+
+fn kiro_device_auth_endpoint(region: &str) -> String {
+    std::env::var("XROUTER_KIRO_DEVICE_AUTH_URL").unwrap_or_else(|_| {
+        format!("https://oidc.{}.amazonaws.com/device_authorization", region)
+    })
 }
 
 fn token_endpoint(provider: &str) -> String {
-    match provider {
-        "kiro" => "https://api.kiro.dev/oauth/token".to_string(),
-        "antigravity" => "https://api.cline.bot/oauth/token".to_string(),
+    match normalize_provider(provider) {
+        "kiro" => format!("https://oidc.{}.amazonaws.com/token", kiro_region()),
+        "antigravity" => google_token_url(),
         other => format!("https://{}.invalid/oauth/token", other),
     }
 }
 
-fn client_id(provider: &str) -> String {
-    match provider {
-        "kiro" => "xrouter-kiro".to_string(),
-        "antigravity" => "xrouter-antigravity".to_string(),
-        other => format!("xrouter-{}", other),
-    }
+fn google_client_id() -> String {
+    std::env::var("XROUTER_GOOGLE_CLIENT_ID").unwrap_or_default()
 }
 
-fn scope_for(provider: &str) -> &'static str {
-    match provider {
-        "kiro" => "openid profile",
-        "antigravity" => "openid profile",
-        _ => "openid",
-    }
+fn google_client_secret() -> String {
+    std::env::var("XROUTER_GOOGLE_CLIENT_SECRET").unwrap_or_default()
+}
+
+fn google_auth_url() -> String {
+    std::env::var("XROUTER_GOOGLE_AUTH_URL")
+        .unwrap_or_else(|_| "https://accounts.google.com/o/oauth2/v2/auth".to_string())
+}
+
+fn google_token_url() -> String {
+    std::env::var("XROUTER_GOOGLE_TOKEN_URL")
+        .unwrap_or_else(|_| "https://oauth2.googleapis.com/token".to_string())
+}
+
+fn google_userinfo_endpoint() -> String {
+    std::env::var("XROUTER_GOOGLE_USERINFO_URL")
+        .unwrap_or_else(|_| "https://www.googleapis.com/oauth2/v3/userinfo".to_string())
 }
 
 /// Helper: current unix-epoch seconds (used by callers that log expiry).
@@ -552,4 +846,77 @@ pub fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkce_verifier_is_url_safe_no_padding() {
+        let v = pkce_verifier();
+        assert!(!v.ends_with('='));
+        assert!(v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        // challenge must be deterministic for a given verifier
+        assert_eq!(pkce_challenge(&v), pkce_challenge(&v));
+        // and differ from the verifier
+        assert_ne!(v, pkce_challenge(&v));
+    }
+
+    #[test]
+    fn google_auth_url_matches_spec() {
+        std::env::set_var(
+            "XROUTER_GOOGLE_CLIENT_ID",
+            "test-client-id.apps.googleusercontent.com",
+        );
+        std::env::set_var("XROUTER_GOOGLE_CLIENT_SECRET", "test-client-secret");
+        let init = build_google_auth_url("http://localhost:3001/oauth/callback");
+        let url = Url::parse(&init.auth_url).expect("valid url");
+        let q: HashMap<String, String> = url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(url.origin().ascii_serialization(), "https://accounts.google.com");
+        assert_eq!(url.path(), "/o/oauth2/v2/auth");
+        assert_eq!(q.get("client_id").unwrap(), &google_client_id());
+        assert_eq!(
+            q.get("redirect_uri").unwrap(),
+            "http://localhost:3001/oauth/callback"
+        );
+        assert_eq!(q.get("response_type").unwrap(), "code");
+        assert_eq!(q.get("access_type").unwrap(), "offline");
+        assert_eq!(q.get("prompt").unwrap(), "consent");
+        assert_eq!(q.get("code_challenge_method").unwrap(), "S256");
+        let scope = q.get("scope").unwrap();
+        assert!(scope.contains("https://www.googleapis.com/auth/cloud-platform"));
+        assert!(scope.contains("https://www.googleapis.com/auth/userinfo.email"));
+        assert!(scope.contains("https://www.googleapis.com/auth/userinfo.profile"));
+        // challenge must verify against the verifier
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(init.code_verifier.as_bytes());
+        let expected = base64_url_no_pad(&h.finalize());
+        assert_eq!(q.get("code_challenge").unwrap(), &expected);
+        assert!(!init.state.is_empty());
+    }
+
+    #[test]
+    fn kiro_endpoints_use_region() {
+        std::env::set_var("KIRO_REGION", "eu-west-1");
+        assert_eq!(
+            kiro_register_endpoint("eu-west-1"),
+            "https://oidc.eu-west-1.amazonaws.com/client/register"
+        );
+        assert_eq!(
+            kiro_device_auth_endpoint("eu-west-1"),
+            "https://oidc.eu-west-1.amazonaws.com/device_authorization"
+        );
+        assert_eq!(
+            token_endpoint("kiro"),
+            "https://oidc.eu-west-1.amazonaws.com/token"
+        );
+        std::env::remove_var("KIRO_REGION");
+    }
 }
