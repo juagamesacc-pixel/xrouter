@@ -656,26 +656,30 @@ async fn device_login_google() -> anyhow::Result<()> {
 
     // Accept the single callback on a worker thread; the async task enforces the
     // 5-minute timeout.
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::channel::<(String, String)>();
     let worker = std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             let mut buf = [0u8; 8192];
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).to_string();
-            let code = req
+            let (code, state) = req
                 .lines()
                 .next()
                 .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|path| {
+                .map(|path| {
                     let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-                    q.split('&').find_map(|kv| {
-                        let (k, v) = kv.split_once('=')?;
-                        if k == "code" {
-                            Some(url_decode(v))
-                        } else {
-                            None
+                    let mut code = String::new();
+                    let mut state = String::new();
+                    for kv in q.split('&') {
+                        if let Some((k, v)) = kv.split_once('=') {
+                            if k == "code" {
+                                code = url_decode(v);
+                            } else if k == "state" {
+                                state = url_decode(v);
+                            }
                         }
-                    })
+                    }
+                    (code, state)
                 })
                 .unwrap_or_default();
             let body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
@@ -691,7 +695,7 @@ async fn device_login_google() -> anyhow::Result<()> {
             );
             let _ = stream.write_all(resp.as_bytes());
             let _ = stream.flush();
-            let _ = tx.send(code);
+            let _ = tx.send((code, state));
         }
     });
 
@@ -700,8 +704,8 @@ async fn device_login_google() -> anyhow::Result<()> {
         tokio::task::spawn_blocking(move || rx.recv()),
     )
     .await;
-    let code = match received {
-        Ok(Ok(Ok(code))) => code,
+    let (code, state) = match received {
+        Ok(Ok(Ok((code, state)))) => (code, state),
         _ => anyhow::bail!("timed out or failed waiting for the Google login callback (5 min)"),
     };
     let _ = worker.join();
@@ -709,7 +713,7 @@ async fn device_login_google() -> anyhow::Result<()> {
         anyhow::bail!("callback received without a code (authorization denied?)");
     }
 
-    let acct = xrouter_auth::complete_google_login(&init, &code).await?;
+    let acct = xrouter_auth::complete_google_login(&init, &code, &state).await?;
     persist_device_account("antigravity", "antigravity", &acct)?;
     println!("✔ Logged in as '{}' for 'antigravity'.", acct.account_id);
     Ok(())
@@ -752,6 +756,7 @@ fn persist_device_account(
             expires_at: None,
             client_id: None,
             client_secret: None,
+            profile_arn: None,
         });
     }
     save(&cfg)?;

@@ -2600,6 +2600,7 @@ dependencies = [
  "anyhow",
  "base64",
  "rand",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

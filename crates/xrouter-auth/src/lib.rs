@@ -105,6 +105,12 @@ pub struct DeviceAccountConfig {
     /// public Google client secret). Needed for token refresh.
     #[serde(default)]
     pub client_secret: Option<String>,
+    /// Q Developer / CodeWhisperer profile ARN discovered after a successful
+    /// device-flow token exchange or refresh (kiro/Builder ID only). `None`
+    /// when discovery was skipped or unavailable. Persisted to the off-RAM
+    /// store but never used for authorization.
+    #[serde(default)]
+    pub profile_arn: Option<String>,
 }
 
 impl DeviceAccountConfig {
@@ -141,6 +147,7 @@ impl std::fmt::Debug for DeviceAccountConfig {
                 "client_secret",
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("profile_arn", &self.profile_arn)
             .finish()
     }
 }
@@ -278,6 +285,12 @@ impl DeviceStore {
 ///
 /// No-op when the token is still valid or when there is no `refresh_token`.
 /// Network failures are returned as errors; callers typically only warn.
+///
+/// On a kiro/Builder ID refresh that fails with a grant/expiry error
+/// (`InvalidGrantException`, `ExpiredTokenException`, or `invalid_grant`) the
+/// client registration may have expired, so we re-register the client once and
+/// retry the refresh (mirrors OmniRoute). If the retry still fails, the error
+/// is returned.
 pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
     if !acct.needs_refresh() {
         return Ok(());
@@ -288,28 +301,26 @@ pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
     };
     let token_url = token_endpoint(&acct.provider);
     let client = reqwest::Client::new();
-    let mut form = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.clone()),
-    ];
-    if let Some(cid) = &acct.client_id {
-        form.push(("client_id", cid.clone()));
-    }
-    if let Some(csec) = &acct.client_secret {
-        form.push(("client_secret", csec.clone()));
-    }
-    let resp = client
-        .post(&token_url)
-        .form(&form)
-        .send()
-        .await
-        .context("device token refresh request")?;
-    let status = resp.status();
-    if !status.is_success() {
-        let txt = resp.text().await.unwrap_or_default();
-        anyhow::bail!("device token refresh failed ({}): {}", status, txt);
-    }
-    let v: serde_json::Value = resp.json().await.context("parse token refresh response")?;
+
+    let v = match do_token_refresh(&client, &token_url, acct, &refresh_token).await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            if is_grant_expired_error(&msg) && normalize_provider(&acct.provider) == "kiro" {
+                tracing::warn!(
+                    "kiro token refresh failed with grant/expiry error; re-registering client and retrying once: {msg}"
+                );
+                let region = kiro_region();
+                let (cid, csec) = register_kiro_client(&region).await?;
+                acct.client_id = Some(cid);
+                acct.client_secret = Some(csec);
+                do_token_refresh(&client, &token_url, acct, &refresh_token).await?
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
     let old_token = acct.access_token.clone();
     if let Some(tok) = v.get("access_token").and_then(|x| x.as_str()) {
         acct.access_token = tok.to_string();
@@ -330,7 +341,54 @@ pub async fn refresh_if_needed(acct: &mut DeviceAccountConfig) -> Result<()> {
             acct.display_name = Some(identity);
         }
     }
+    // Best-effort profile ARN discovery (kiro only) + Builder ID token prefix
+    // sanity check. Neither is fatal.
+    if let Some(arn) = discover_kiro_profile_arn(acct).await {
+        acct.profile_arn = Some(arn);
+    }
+    check_builder_id_token_prefix(acct);
     Ok(())
+}
+
+/// Perform a single OAuth2 token-refresh request and return the parsed JSON
+/// response. Extracted from [`refresh_if_needed`] so the grant-expiry retry
+/// path can reuse it without duplicating the form construction.
+async fn do_token_refresh(
+    client: &reqwest::Client,
+    token_url: &str,
+    acct: &DeviceAccountConfig,
+    refresh_token: &str,
+) -> Result<serde_json::Value> {
+    let mut form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_string()),
+    ];
+    if let Some(cid) = &acct.client_id {
+        form.push(("client_id", cid.clone()));
+    }
+    if let Some(csec) = &acct.client_secret {
+        form.push(("client_secret", csec.clone()));
+    }
+    let resp = client
+        .post(token_url)
+        .form(&form)
+        .send()
+        .await
+        .context("device token refresh request")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let txt = resp.text().await.unwrap_or_default();
+        anyhow::bail!("device token refresh failed ({}): {}", status, txt);
+    }
+    resp.json().await.context("parse token refresh response")
+}
+
+/// True when a refresh error indicates the client registration or token grant
+/// has expired/been revoked and a fresh client registration may help.
+fn is_grant_expired_error(msg: &str) -> bool {
+    msg.contains("InvalidGrantException")
+        || msg.contains("ExpiredTokenException")
+        || msg.contains("invalid_grant")
 }
 
 // ── Kiro (AWS Builder ID) device-authorization flow ───────────────────────────
@@ -381,7 +439,12 @@ pub async fn initiate_device_login(
 }
 
 /// AWS SSO OIDC dynamic client registration. Returns `(client_id, client_secret)`.
-async fn kiro_register_client(region: &str) -> Result<(String, String)> {
+///
+/// The requested scopes are expanded beyond the bare `openid profile` to include
+/// the CodeWhisperer/Q Developer scopes (mirrors OmniRoute) and are configurable
+/// via the `KIRO_SCOPES` env var (see [`kiro_scopes`]).
+async fn register_kiro_client(region: &str) -> Result<(String, String)> {
+    assert_valid_aws_region(region)?;
     let url = kiro_register_endpoint(region);
     let client = reqwest::Client::new();
     let resp = client
@@ -389,7 +452,7 @@ async fn kiro_register_client(region: &str) -> Result<(String, String)> {
         .form(&[
             ("clientName", "xrouter"),
             ("clientType", "public"),
-            ("scopes", "openid profile"),
+            ("scopes", &kiro_scopes()),
         ])
         .send()
         .await
@@ -430,7 +493,7 @@ async fn kiro_device_authorization(
             ("client_id", client_id),
             ("client_secret", client_secret),
             ("startUrl", "https://view.awsapps.com/start"),
-            ("scopes", "openid profile"),
+            ("scopes", &kiro_scopes()),
         ])
         .send()
         .await
@@ -491,7 +554,7 @@ async fn kiro_device_authorization(
 /// Begin the kiro device login: register a client, then request a device code.
 async fn initiate_kiro_login(account: &str, display: &str) -> Result<DeviceLoginInit> {
     let region = kiro_region();
-    let (client_id, client_secret) = kiro_register_client(&region).await?;
+    let (client_id, client_secret) = register_kiro_client(&region).await?;
     let mut init = kiro_device_authorization(&region, &client_id, &client_secret).await?;
     init.account = account.to_string();
     init.display = display.to_string();
@@ -556,7 +619,7 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
                 Some(s) if !s.is_empty() => s.to_string(),
                 _ => derive_identity(&init.provider, &access_token).await,
             };
-            return Ok(DeviceAccountConfig {
+            let mut cfg = DeviceAccountConfig {
                 account_id: identity.clone(),
                 display_name: Some(identity.clone()),
                 provider: init.provider.clone(),
@@ -565,7 +628,15 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
                 expires_at,
                 client_id: Some(init.client_id.clone()),
                 client_secret: Some(init.client_secret.clone()),
-            });
+                profile_arn: None,
+            };
+            // Best-effort profile ARN discovery (kiro only) + Builder ID token
+            // prefix sanity check. Neither is fatal to the login.
+            if let Some(arn) = discover_kiro_profile_arn(&cfg).await {
+                cfg.profile_arn = Some(arn);
+            }
+            check_builder_id_token_prefix(&cfg);
+            return Ok(cfg);
         }
         let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
         if err == "authorization_pending" {
@@ -637,7 +708,19 @@ pub fn build_google_auth_url(redirect_uri: &str) -> GoogleLoginInit {
 /// Exchange the `code` returned by Google's loopback redirect for tokens, derive
 /// the account identity (email via userinfo), and return a populated
 /// [`DeviceAccountConfig`].
-pub async fn complete_google_login(init: &GoogleLoginInit, code: &str) -> Result<DeviceAccountConfig> {
+///
+/// `state` is the `state` query parameter echoed back by Google on the
+/// loopback callback. It is verified against the value generated when the auth
+/// URL was built (`init.state`); a mismatch is a CSRF attempt and fails the
+/// login (mirrors OmniRoute's route-handler state verification).
+pub async fn complete_google_login(
+    init: &GoogleLoginInit,
+    code: &str,
+    state: &str,
+) -> Result<DeviceAccountConfig> {
+    if state != init.state {
+        anyhow::bail!("invalid state");
+    }
     let client = reqwest::Client::new();
     // Validate the client credentials are configured *before* performing the
     // exchange; otherwise we would silently send empty values to Google.
@@ -694,6 +777,7 @@ pub async fn complete_google_login(init: &GoogleLoginInit, code: &str) -> Result
         expires_at,
         client_id: Some(google_client_id()?),
         client_secret: Some(google_client_secret()?),
+        profile_arn: None,
     })
 }
 
@@ -882,7 +966,14 @@ fn store_path() -> Result<PathBuf> {
 }
 
 fn kiro_region() -> String {
-    std::env::var("KIRO_REGION").unwrap_or_else(|_| "us-east-1".to_string())
+    let region = std::env::var("KIRO_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    // Validate and fall back to the default region on a malformed value rather
+    // than building broken AWS endpoints. Mirrors OmniRoute's region guard.
+    if let Err(e) = assert_valid_aws_region(&region) {
+        tracing::warn!("KIRO_REGION '{}' is invalid ({}); falling back to us-east-1", region, e);
+        return "us-east-1".to_string();
+    }
+    region
 }
 
 fn kiro_register_endpoint(region: &str) -> String {
@@ -938,6 +1029,116 @@ fn google_token_url() -> String {
 fn google_userinfo_endpoint() -> String {
     std::env::var("XROUTER_GOOGLE_USERINFO_URL")
         .unwrap_or_else(|_| "https://www.googleapis.com/oauth2/v3/userinfo".to_string())
+}
+
+// ── Kiro scopes, region guard, profile ARN discovery, Builder ID checks ────────
+
+/// Kiro (AWS Builder ID) OAuth scopes requested at client registration and
+/// device authorization.
+///
+/// Defaults to `openid profile` plus the CodeWhisperer/Q Developer scopes
+/// (mirrors OmniRoute). Override with the `KIRO_SCOPES` env var when a
+/// different scope set is required.
+fn kiro_scopes() -> String {
+    std::env::var("KIRO_SCOPES").unwrap_or_else(|_| {
+        "openid profile codewhisperer:completions codewhisperer:analysis codewhisperer:conversations"
+            .to_string()
+    })
+}
+
+/// Validate an AWS region string against `^[a-z]{2}-[a-z]+-\d$`.
+///
+/// Used as a guard in [`kiro_region`] and [`register_kiro_client`] so we never
+/// build malformed `*.amazonaws.com` endpoints from a typo'd `KIRO_REGION`.
+fn assert_valid_aws_region(region: &str) -> Result<()> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"^[a-z]{2}-[a-z]+-\d$").expect("valid AWS region regex")
+    });
+    if re.is_match(region) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "invalid AWS region '{}' (expected pattern ^[a-z]{{2}}-[a-z]+-\\d$)",
+            region
+        )
+    }
+}
+
+/// Expected prefix for AWS Builder ID (kiro) access tokens. Builder ID tokens
+/// are JWTs, so they begin with the JWT header prefix `eyJ`. If a kiro access
+/// token does not start with this prefix we log a warning (non-fatal) — the
+/// token may still be valid, but it is worth surfacing in case the wrong
+/// credential was exchanged. Mirrors OmniRoute's Builder ID prefix sanity check.
+const BUILDER_ID_TOKEN_PREFIX: &str = "eyJ";
+
+/// Log a (non-fatal) warning when a Builder ID access token does not start with
+/// the expected prefix. No-op for non-kiro providers.
+fn check_builder_id_token_prefix(acct: &DeviceAccountConfig) {
+    if normalize_provider(&acct.provider) != "kiro" {
+        return;
+    }
+    if !acct.access_token.starts_with(BUILDER_ID_TOKEN_PREFIX) {
+        tracing::warn!(
+            "kiro (Builder ID) access token does not start with expected prefix '{}'; token may be invalid or mis-issued",
+            BUILDER_ID_TOKEN_PREFIX
+        );
+    }
+}
+
+/// Best-effort discovery of the Q Developer / CodeWhisperer profile ARN for a
+/// signed-in Builder ID account.
+///
+/// Mirrors OmniRoute's `discoverKiroProfileArnAcrossRegions`: probe the
+/// profiles endpoint across the standard regions (`us-east-1`, `us-west-2`,
+/// `eu-west-1`) and return the first `profileArn` found. This is purely
+/// advisory — it never fails the login/refresh path; on any error we simply
+/// return `None` and the caller leaves `profile_arn` unset.
+pub async fn discover_kiro_profile_arn(acct: &DeviceAccountConfig) -> Option<String> {
+    if normalize_provider(&acct.provider) != "kiro" {
+        return None;
+    }
+    const REGIONS: &[&str] = &["us-east-1", "us-west-2", "eu-west-1"];
+    let client = reqwest::Client::new();
+    for region in REGIONS {
+        let url = format!("https://codewhisperer.{}.amazonaws.com/", region);
+        let resp = match client
+            .get(&url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", acct.access_token),
+            )
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let v: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+        // Accept either a top-level `profileArn` or a `profiles[]` list.
+        if let Some(arn) = v.get("profileArn").and_then(|x| x.as_str()) {
+            if !arn.is_empty() {
+                return Some(arn.to_string());
+            }
+        }
+        if let Some(arr) = v.get("profiles").and_then(|x| x.as_array()) {
+            if let Some(arn) = arr
+                .iter()
+                .find_map(|p| p.get("profileArn").and_then(|x| x.as_str()))
+            {
+                if !arn.is_empty() {
+                    return Some(arn.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Helper: current unix-epoch seconds (used by callers that log expiry).
@@ -1019,5 +1220,55 @@ mod tests {
             "https://oidc.eu-west-1.amazonaws.com/token"
         );
         std::env::remove_var("KIRO_REGION");
+    }
+
+    #[test]
+    fn valid_aws_region_patterns() {
+        assert!(assert_valid_aws_region("us-east-1").is_ok());
+        assert!(assert_valid_aws_region("eu-west-2").is_ok());
+        assert!(assert_valid_aws_region("ap-southeast-1").is_ok());
+        assert!(assert_valid_aws_region("us-east").is_err());
+        assert!(assert_valid_aws_region("US-east-1").is_err());
+        assert!(assert_valid_aws_region("us-east-12").is_err());
+        assert!(assert_valid_aws_region("").is_err());
+    }
+
+    #[test]
+    fn grant_expired_error_detection() {
+        assert!(is_grant_expired_error("foo InvalidGrantException bar"));
+        assert!(is_grant_expired_error("ExpiredTokenException"));
+        assert!(is_grant_expired_error("error: invalid_grant"));
+        assert!(!is_grant_expired_error("some other error"));
+        assert!(!is_grant_expired_error(""));
+    }
+
+    #[test]
+    fn kiro_scopes_default_and_env() {
+        std::env::remove_var("KIRO_SCOPES");
+        let s = kiro_scopes();
+        assert!(s.contains("openid"));
+        assert!(s.contains("codewhisperer:completions"));
+        assert!(s.contains("codewhisperer:analysis"));
+        assert!(s.contains("codewhisperer:conversations"));
+        std::env::set_var("KIRO_SCOPES", "openid custom");
+        assert_eq!(kiro_scopes(), "openid custom");
+        std::env::remove_var("KIRO_SCOPES");
+    }
+
+    #[test]
+    fn google_login_state_verification() {
+        // A mismatched callback state must be rejected (CSRF guard).
+        let init = GoogleLoginInit {
+            auth_url: String::new(),
+            code_verifier: String::new(),
+            redirect_uri: String::new(),
+            state: "expected".to_string(),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // We can't complete a real exchange, but we can assert the state check
+        // short-circuits before any network call by supplying a bad state.
+        let err = rt.block_on(complete_google_login(&init, "code", "wrong"));
+        assert!(err.is_err());
+        assert_eq!(err.unwrap_err().to_string(), "invalid state");
     }
 }

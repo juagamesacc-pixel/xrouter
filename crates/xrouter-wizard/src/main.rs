@@ -711,6 +711,7 @@ fn device_oauth_callback(query: &str) -> (String, String) {
         .collect();
     let code = params.get("code").cloned().unwrap_or_default();
     let err = params.get("error").cloned().unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
     let pending = GOOGLE_PENDING
         .get_or_init(|| Mutex::new(None))
         .lock()
@@ -737,7 +738,7 @@ fn device_oauth_callback(query: &str) -> (String, String) {
             "400 Bad Request".into(),
         );
     }
-    match rt().block_on(xrouter_auth::complete_google_login(&pending, &code)) {
+    match rt().block_on(xrouter_auth::complete_google_login(&pending, &code, &state)) {
         Ok(acct) => {
             let mut store = xrouter_auth::DeviceStore::load()
                 .unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
