@@ -659,17 +659,17 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
   async function fetchModels(){const pid=fetchProviderValue,ftype=fetchTypeValue;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
   const p=S.providers[pid];const hasKeys=Array.isArray(p.keys)&&p.keys.length;const hasDevice=Array.isArray(p.accounts)&&p.accounts.length;if(!hasKeys&&!hasDevice){toast('Add an API key or device account first',true);return}
   const btn=document.getElementById('fetchModelsBtn');btn.disabled=true;btn.innerHTML=`Fetching<span class="dots"><span></span><span></span><span></span></span>`;
-  try{const url=p.base_url.replace(/\/$/,'')+'/models';const hdrs=hasKeys?{'Authorization':'Bearer '+p.keys[0]}:{};const r=await fetch(url,{headers:hdrs});
-   if(!r.ok){let bodyText='';try{bodyText=await r.text()}catch(e){}showModal('Model fetch failed','HTTP '+r.status,url+'\nHTTP '+r.status+' '+r.statusText+(bodyText?'\n\n'+bodyText:''));return}
+  try{const q='/api/models/fetch?provider='+encodeURIComponent(pid)+'&type='+encodeURIComponent(ftype);const r=await fetch(q);
+   if(!r.ok){let bodyText='';try{bodyText=await r.text()}catch(e){}showModal('Model fetch failed','HTTP '+r.status,q+'\nHTTP '+r.status+'\n\n'+bodyText);return}
    const d=await r.json();
-   if(d.error){showModal('Model fetch failed',d.error,url+'\n\nResponse:\n'+JSON.stringify(d,null,2));return}
+   if(d.error){showModal('Model fetch failed',d.error,q+'\n\nResponse:\n'+JSON.stringify(d,null,2));return}
    let ms=(d.data||d||[]).map(m=>({id:m.id||m.name||String(m),owned_by:m.owned_by||'',free:m.free===true}));
   // Image-model heuristic (flux/sdxl/dall-e/stable-diffusion/imagen/ideogram/image)
   const isImg=id=>{const n=String(id).toLowerCase();return n.includes('flux')||n.includes('sdxl')||n.includes('dall-e')||n.includes('dall_e')||n.includes('stable-diffusion')||n.includes('stable_diffusion')||n.includes('imagen')||n.includes('ideogram')||n.includes('image')};
   ms=ms.map(m=>({...m,image:isImg(m.id)}));
   if(ftype==='images')ms=ms.filter(m=>m.image);else if(ftype==='text')ms=ms.filter(m=>!m.image);
    S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];modelPage=0;document.getElementById('modelArea').style.display='';document.getElementById('modelHint').style.display='none';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
-   catch(e){showModal('Model fetch failed',e.message,'GET '+p.base_url.replace(/\/$/,'')+'/models\n\n'+(e.stack||e.message||String(e)))}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
+   catch(e){showModal('Model fetch failed',e.message,'GET '+q+'\n\n'+(e.stack||e.message||String(e)))}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
 
 const MODELS_PER_PAGE=50;
 function getFilteredModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=fetchProviderValue,models=S.modelCache[pid]||[];
