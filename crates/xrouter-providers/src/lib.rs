@@ -220,11 +220,22 @@ impl DeviceProvider {
         for region in &regions {
             let base = kiro_q_base_url(region);
             let url = format!("{}/ListAvailableModels?origin=AI_EDITOR", base.trim_end_matches('/'));
-            match kiro_fetch_models(&self.client, &url, key).await {
-                Ok(models) => return Ok(models),
-                Err(e) => {
+            // Bound each attempt so a hung/unreachable AWS endpoint can't
+            // wedge the caller (wizard/server) indefinitely.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                kiro_fetch_models(&self.client, &url, key),
+            )
+            .await
+            {
+                Ok(Ok(models)) => return Ok(models),
+                Ok(Err(e)) => {
                     last_err = e.to_string();
                     warn!("kiro ListAvailableModels attempt failed for region {region}: {e}");
+                }
+                Err(_) => {
+                    last_err = "timed out after 20s".to_string();
+                    warn!("kiro ListAvailableModels attempt timed out for region {region}");
                 }
             }
         }
@@ -247,18 +258,29 @@ impl DeviceProvider {
         let mut last_err = String::new();
         for (i, base) in endpoints.iter().enumerate() {
             let url = format!("{}/v1internal:fetchAvailableModels", base.trim_end_matches('/'));
-            match antigravity_fetch_models(&self.client, &url, key, &self.extra_headers).await {
-                Ok(models) if !models.is_empty() => return Ok(models),
-                Ok(_) => {
+            // Bound each attempt (see kiro note above).
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                antigravity_fetch_models(&self.client, &url, key, &self.extra_headers),
+            )
+            .await
+            {
+                Ok(Ok(models)) if !models.is_empty() => return Ok(models),
+                Ok(Ok(_)) => {
                     // Per spec, an empty parse falls through to the fallback
                     // catalog; we still try the secondary endpoint for
                     // robustness before giving up.
                     last_err = format!("endpoint[{i}] {url} returned no parseable models");
                     continue;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     last_err = e.to_string();
                     warn!("antigravity fetchAvailableModels attempt {i} failed: {e}");
+                    continue;
+                }
+                Err(_) => {
+                    last_err = format!("endpoint[{i}] timed out after 20s");
+                    warn!("antigravity fetchAvailableModels attempt {i} timed out");
                     continue;
                 }
             }

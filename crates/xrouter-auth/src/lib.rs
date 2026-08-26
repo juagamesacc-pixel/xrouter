@@ -359,19 +359,22 @@ async fn do_token_refresh(
     acct: &DeviceAccountConfig,
     refresh_token: &str,
 ) -> Result<serde_json::Value> {
-    let mut form = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.to_string()),
-    ];
+    // AWS SSO OIDC CreateToken expects a JSON body with camelCase keys
+    // (mirrors OmniRoute's refresh); form-encoded snake_case yields 400
+    // invalid_request once codewhisperer scopes are on the registration.
+    let mut body = serde_json::json!({
+        "grantType": "refresh_token",
+        "refreshToken": refresh_token
+    });
     if let Some(cid) = &acct.client_id {
-        form.push(("client_id", cid.clone()));
+        body["clientId"] = serde_json::Value::String(cid.clone());
     }
     if let Some(csec) = &acct.client_secret {
-        form.push(("client_secret", csec.clone()));
+        body["clientSecret"] = serde_json::Value::String(csec.clone());
     }
     let resp = client
         .post(token_url)
-        .form(&form)
+        .json(&body)
         .send()
         .await
         .context("device token refresh request")?;
