@@ -215,7 +215,72 @@ fn load_config_from(path: &std::path::Path) -> Config {
             cfg.tiers.push(t);
         }
     }
+    // Self-heal: re-attach any device-login provider (kiro / antigravity) whose
+    // account lives in the off-RAM device store but is missing from the config
+    // (e.g. wiped by an earlier UI save). See `heal_device_providers`.
+    heal_device_providers(&mut cfg);
     cfg
+}
+
+/// Ensure every provider present in [`xrouter_auth::DeviceStore`] has a
+/// corresponding (non-secret) entry in the config providers map. This recovers
+/// configs where a UI save previously wiped a device-login provider — the
+/// account reappears in dropdowns without requiring a re-login.
+///
+/// Best effort: any device-store load error is ignored (we simply skip the
+/// heal). For each missing provider we insert an entry with:
+///   * `kind`      = provider name (e.g. "kiro")
+///   * `base_url`  = the default device base url for that provider
+///   * `enabled`   = true
+///   * `keys`      = empty (secrets live only in the device store)
+///   * `accounts`  = metadata synced from the store (account_id / display_name /
+///                   provider, with empty tokens)
+fn heal_device_providers(cfg: &mut Config) {
+    let store = match xrouter_auth::DeviceStore::load() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if store.accounts.is_empty() {
+        return;
+    }
+    // Unique provider names present in the store.
+    let mut prov_names: Vec<String> = Vec::new();
+    for a in &store.accounts {
+        if !prov_names.contains(&a.provider) {
+            prov_names.push(a.provider.clone());
+        }
+    }
+    for prov in prov_names {
+        if cfg.providers.contains_key(&prov) {
+            continue;
+        }
+        let accounts: Vec<Value> = store
+            .accounts
+            .iter()
+            .filter(|a| a.provider == prov)
+            .map(|a| {
+                serde_json::json!({
+                    "account_id": a.account_id,
+                    "display_name": a.display_name,
+                    "provider": a.provider,
+                    "access_token": "",
+                    "refresh_token": "",
+                    "expires_at": ""
+                })
+            })
+            .collect();
+        cfg.providers.insert(
+            prov.clone(),
+            ProviderConfig {
+                kind: prov.clone(),
+                base_url: device_base_url(&prov),
+                enabled: true,
+                keys: vec![],
+                quota_ban_secs: 300,
+                accounts,
+            },
+        );
+    }
 }
 
 fn load_config() -> Config {
@@ -323,7 +388,22 @@ fn verify_saved_config(requested: &Config, path: &std::path::Path) -> Result<Val
 /// file from disk and verify the save actually landed. Returns (json, status).
 fn post_config(body: &str, path: &std::path::Path) -> (String, String) {
     match serde_json::from_str::<Config>(body) {
-        Ok(cfg) => {
+        Ok(mut cfg) => {
+            // Merge device providers from the CURRENT on-disk config so a UI
+            // save cannot wipe providers that were added by device login (kiro /
+            // antigravity) but are absent from the UI's payload. Only providers
+            // with non-empty `accounts` (device providers) are carried over
+            // untouched; key-only providers absent from the payload are still
+            // treated as intentional deletions (unchanged behavior).
+            if let Ok(current) = std::fs::read_to_string(path) {
+                if let Ok(current_cfg) = toml::from_str::<Config>(&current) {
+                    for (id, p) in current_cfg.providers {
+                        if !p.accounts.is_empty() && !cfg.providers.contains_key(&id) {
+                            cfg.providers.insert(id, p);
+                        }
+                    }
+                }
+            }
             if let Some(err) = validate_config(&cfg) {
                 (json_error(&err), "400 Bad Request".into())
             } else {
@@ -923,8 +1003,8 @@ fn save_device_account_to_config(provider: &str, acct: &xrouter_auth::DeviceAcco
             "display_name": acct.display_name,
             "provider": acct.provider,
             "access_token": "",
-            "refresh_token": null,
-            "expires_at": null,
+            "refresh_token": "",
+            "expires_at": ""
         }));
         let _ = save_config(&cfg);
     }
@@ -1266,6 +1346,72 @@ mod persist_integration_tests {
         // The file on disk must actually contain the key (the bug we guard against).
         let on_disk = std::fs::read_to_string(&p).expect("read saved file");
         assert!(on_disk.contains("sk-secret-123"), "key must be persisted to disk: {}", on_disk);
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn post_config_preserves_device_providers_with_accounts() {
+        let p = tmp_config_path();
+        let _ = std::fs::remove_file(&p);
+
+        // Seed the on-disk config with a device provider (kiro) that has
+        // accounts, exactly as `save_device_account_to_config` would have
+        // written it after a kiro login. Written as raw TOML because `toml`
+        // cannot represent JSON `null` (the account tokens live in the device
+        // store, not in config.toml).
+        let seeded = r#"
+[settings]
+default_tier = ""
+
+[providers.kiro]
+kind = "kiro"
+base_url = "https://api.kiro.dev/v1"
+enabled = true
+quota_ban_secs = 300
+keys = []
+
+[[providers.kiro.accounts]]
+account_id = "user@x.com"
+display_name = "user@x.com"
+provider = "kiro"
+access_token = ""
+refresh_token = ""
+expires_at = ""
+"#;
+        std::fs::write(&p, seeded).unwrap();
+
+        // UI payload that was loaded BEFORE the kiro login: it has no kiro
+        // provider. The old bug wiped kiro here; the merge must preserve it.
+        let body = serde_json::json!({
+            "settings": {"default_tier": null},
+            "providers": {
+                "opencode-zen": {
+                    "kind": "openai-compat",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "enabled": true,
+                    "keys": [],
+                    "quota_ban_secs": 300
+                }
+            },
+            "tiers": [{
+                "name": "big-pickle", "strict": true, "default_entry": 0,
+                "entries": [{"provider":"opencode-zen","model":"big-pickle","is_default":true,"weight":1,"endpoint_id":""}]
+            }]
+        })
+        .to_string();
+
+        let (json, status) = post_config(&body, &p);
+        assert_eq!(status, "200 OK", "expected 200, got {} ({})", status, json);
+
+        // The kiro device provider (and its account) must survive the UI save.
+        let on_disk = std::fs::read_to_string(&p).expect("read saved file");
+        assert!(on_disk.contains("kiro"), "kiro provider must be preserved: {}", on_disk);
+        assert!(
+            on_disk.contains("user@x.com"),
+            "kiro account must be preserved: {}",
+            on_disk
+        );
 
         let _ = std::fs::remove_file(&p);
     }
