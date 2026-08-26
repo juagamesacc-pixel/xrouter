@@ -582,20 +582,20 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
         if SystemTime::now() > deadline {
             anyhow::bail!("device login timed out");
         }
-        let mut form = vec![
-            (
-                "grant_type".to_string(),
-                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
-            ),
-            ("device_code".to_string(), init.device_code.clone()),
-            ("client_id".to_string(), init.client_id.clone()),
-        ];
+        // AWS SSO OIDC CreateToken expects a JSON body with camelCase keys
+        // (mirrors OmniRoute); form-encoded snake_case yields 400
+        // invalid_request once codewhisperer scopes are on the registration.
+        let mut body = serde_json::json!({
+            "grantType": "urn:ietf:params:oauth:grant-type:device_code",
+            "deviceCode": init.device_code,
+            "clientId": init.client_id
+        });
         if !init.client_secret.is_empty() {
-            form.push(("client_secret".to_string(), init.client_secret.clone()));
+            body["clientSecret"] = serde_json::Value::String(init.client_secret.clone());
         }
         let resp = client
             .post(&url)
-            .form(&form)
+            .json(&body)
             .send()
             .await
             .context("device token poll")?;
@@ -657,7 +657,16 @@ pub async fn poll_device_login(init: &DeviceLoginInit) -> Result<DeviceAccountCo
             tokio::time::sleep(Duration::from_secs((init.interval * 2).max(1))).await;
             continue;
         }
-        anyhow::bail!("device login failed: {}", err);
+        // Surface the raw OAuth error + description (no extra prefix — the
+        // caller adds context; doubling reads as "failed: failed: ...").
+        let desc = v
+            .get("error_description")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if desc.is_empty() {
+            anyhow::bail!("{}", err);
+        }
+        anyhow::bail!("{} — {}", err, desc);
     }
 }
 
