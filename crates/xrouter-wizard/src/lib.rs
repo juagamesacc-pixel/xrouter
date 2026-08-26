@@ -58,10 +58,12 @@ mod tests {
         // (payload built without mutating S), a dirty-check before remote
         // sync, a central provider-select "Add key" button, 50-per-page model
         // pagination, and server-side key rotation on model fetch, raising it
-        // to 80 KB.
+        // to 80 KB. The error-details debug toggle (See details / hide details
+        // with readonly textarea, copy-to-clipboard, full HTTP status + response
+        // body on every error path) raised it to 85 KB.
         assert!(
-            WIZARD_HTML_LEN < 80_000,
-            "wizard.html is {} bytes, exceeds 80 KB budget",
+            WIZARD_HTML_LEN < 85_000,
+            "wizard.html is {} bytes, exceeds 85 KB budget",
             WIZARD_HTML_LEN
         );
     }

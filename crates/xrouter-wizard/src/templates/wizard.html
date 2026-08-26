@@ -174,6 +174,18 @@ input::placeholder{color:var(--fg3)}
 .dropdown-search input{padding:7px 10px;font-size:.82rem}
 .dropdown-search input:focus{border-color:var(--accent)}
 #dialogInput{margin-top:14px;width:100%;padding:10px 14px;font-size:.9rem;background:var(--bg3);color:var(--fg);border:1.5px solid var(--border);border-radius:var(--radius-xs);outline:none;transition:border-color .2s,box-shadow .2s}
+.error-details-section{margin-top:12px;position:relative}
+.error-details-toggle{display:inline-flex;align-items:center;gap:5px;padding:4px 0;background:none;border:none;color:var(--fg3);font-size:.78rem;cursor:pointer;transition:color .2s;font-family:inherit}
+.error-details-toggle:hover{color:var(--fg2)}
+.error-details-toggle svg{width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:2.5;transition:transform .25s var(--ease)}
+.error-details-toggle.open svg{transform:rotate(180deg)}
+.error-details-body{max-height:0;opacity:0;overflow:hidden;transition:max-height .3s var(--ease),opacity .25s var(--ease)}
+.error-details-body.open{max-height:200px;opacity:1}
+.error-details-textarea{width:100%;min-height:120px;max-height:180px;resize:none;font-family:var(--mono);font-size:.78rem;line-height:1.5;padding:12px 14px;color:var(--fg2);background:rgba(9,9,11,.6);border:1px solid var(--border);border-radius:var(--radius-xs);outline:none;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bg4) transparent}
+.error-details-textarea::-webkit-scrollbar{width:5px}
+.error-details-textarea::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+.error-copy-wrap{position:relative}
+.error-copy-btn{position:absolute;top:6px;right:6px;display:inline-flex;align-items:center;gap:4px;padding:4px 8px;font-size:.72rem}
 </style>
 </head>
 <body>
@@ -378,43 +390,44 @@ function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.p
 async function loadState(){try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();applyServerConfig(d)}}catch(e){}for(const[k,v]of Object.entries(BUILTINS))if(!S.providers[k])S.providers[k]={...v}}
 function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null,api_token:S.api_token||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
 async function persist(payloadOverride){
-  let res={ok:false,error:'unknown error'};
+  let res={ok:false,error:'unknown error',details:''};
   let gotServerResponse=false;
   try{
     const payload=payloadOverride||buildServerPayload();
     const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!r.ok){
       let msg='Failed to save configuration (HTTP '+r.status+')';
-      try{const d=await r.json(); if(d&&d.error)msg=d.error;}catch(e){}
-      res={ok:false,error:msg};
+      let det='POST /api/config\nHTTP '+r.status+' '+r.statusText;
+      try{const body=await r.text();det+='\n\n'+body;try{const d=JSON.parse(body);if(d&&d.error)msg=d.error;}catch(e2){}}catch(e){}
+      res={ok:false,error:msg,details:det};
     }else{
       gotServerResponse=true;
       const d=await r.json();
       // Success is ONLY when the server confirms it actually verified the save.
       if(!d.verified){
-        res={ok:false,error:'save verification failed: '+(d.error||'server reported unverified save')};
+        res={ok:false,error:'save verification failed: '+(d.error||'server reported unverified save'),details:'POST /api/config response:\n'+JSON.stringify(d,null,2)};
       }else{
         // Independent re-read from disk to confirm the saved providers/tiers.
         try{
           const c=await fetch('/api/config');
           if(!c.ok){
-            res={ok:false,error:'save verification failed: could not re-read saved config'};
+            res={ok:false,error:'save verification failed: could not re-read saved config',details:'GET /api/config\nHTTP '+c.status+' '+c.statusText};
           }else{
             const saved=await c.json();
             const mismatch=verifySaved(payload,saved);
             if(mismatch){
-              res={ok:false,error:'save verification mismatch: '+mismatch};
+              res={ok:false,error:'save verification mismatch: '+mismatch,details:'Sent payload:\n'+JSON.stringify(payload,null,2)+'\n\nOn-disk config:\n'+JSON.stringify(saved,null,2)};
             }else{
               res={ok:true,verified:true,providers:d.providers,tiers:d.tiers};
             }
           }
         }catch(e){
-          res={ok:false,error:'save verification failed: '+(e&&e.message?e.message:e)};
+          res={ok:false,error:'save verification failed: '+(e&&e.message?e.message:e),details:(e&&e.stack?e.stack:String(e))};
         }
       }
     }
   }catch(e){
-    res={ok:false,error:'Network error saving config: '+(e&&e.message?e.message:e)};
+    res={ok:false,error:'Network error saving config: '+(e&&e.message?e.message:e),details:(e&&e.stack?e.stack:String(e))};
   }
   // On success, re-sync from the (now verified) server state.
   if(res.ok){
@@ -461,7 +474,7 @@ async function syncFromServer(){
 function renderAll(){renderProviders();renderTiers();renderSavedModels();renderKeysCentral();populateFetchSelect();updateSteps();initDeviceLogin();loadAuthStatus()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg,err){const el=document.getElementById('toast');el.textContent=(err?'✕ ':'✔ ')+msg;el.className='toast show'+(err?' error':'');setTimeout(()=>el.classList.remove('show'),3000)}
-function showModal(title,msg){openDialog({type:'alert',title:title||'Notice',msg:String(msg||'')})}
+function showModal(title,msg,details){openDialog({type:'alert',title:title||'Notice',msg:String(msg||''),details:details||null})}
 function hideModal(){closeDialog(true)}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&dialogResolver)closeDialog(dialogType==='alert'?true:null)});
 
@@ -479,6 +492,24 @@ function openDialog(opts){
     const input=document.getElementById('dialogInput');
     const actions=document.getElementById('dialogActions');
     actions.innerHTML='';
+    // Remove any previous details section
+    const oldDet=document.querySelector('.error-details-section');if(oldDet)oldDet.remove();
+    // Inject error-details toggle + readonly textarea when details are provided
+    if(opts.details){
+      const sec=document.createElement('div');sec.className='error-details-section';
+      const tog=document.createElement('button');tog.className='error-details-toggle';
+      tog.innerHTML='<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg> See details';
+      const body=document.createElement('div');body.className='error-details-body';
+      const wrap=document.createElement('div');wrap.className='error-copy-wrap';
+      const ta=document.createElement('textarea');ta.className='error-details-textarea';ta.readOnly=true;ta.rows=6;ta.value=opts.details;ta.spellcheck=false;
+      const cp=document.createElement('button');cp.className='btn btn-secondary btn-sm error-copy-btn';
+      cp.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+      let open=false;
+      tog.onclick=()=>{open=!open;body.classList.toggle('open',open);tog.classList.toggle('open',open);tog.innerHTML='<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg> '+(open?'Hide details':'See details')};
+      cp.onclick=()=>{navigator.clipboard.writeText(opts.details).then(()=>{toast('Copied \u2713');cp.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied!';setTimeout(()=>{cp.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy'},2000)}).catch(()=>toast('Copy failed',true))};
+      wrap.append(ta,cp);body.appendChild(wrap);sec.append(tog,body);
+      document.getElementById('dialogMsg').after(sec);
+    }
     if(opts.type==='prompt'){
       input.style.display='';input.value=opts.inputValue||'';input.placeholder=opts.placeholder||'';
       const ok=document.createElement('button');ok.className='btn btn-primary';ok.textContent=opts.confirmText||'OK';
@@ -574,8 +605,8 @@ async function persistAddKey(pid,key){
   payload.providers[pid].keys=payload.providers[pid].keys.concat([key]);
   return await persist(payload);
 }
-document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k)return;const pid=S.selectedProvider;const r=await persistAddKey(pid,k);if(!r.ok){showModal('Could not save key',r.error);return}renderKeys(S.providers[pid].keys);renderProviders();toast('Key added ✓ (verified)')});
-document.getElementById('saveConfig').addEventListener('click',async()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];S._dirty=true;p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;const r=await persist();if(!r.ok){showModal('Could not save provider',r.error);return}toast('Provider saved ✓ (verified)');updateSteps()});
+document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k)return;const pid=S.selectedProvider;const r=await persistAddKey(pid,k);if(!r.ok){showModal('Could not save key',r.error,r.details);return}renderKeys(S.providers[pid].keys);renderProviders();toast('Key added ✓ (verified)')});
+document.getElementById('saveConfig').addEventListener('click',async()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];S._dirty=true;p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;const r=await persist();if(!r.ok){showModal('Could not save provider',r.error,r.details);return}toast('Provider saved ✓ (verified)');updateSteps()});
 document.getElementById('cancelConfig').addEventListener('click',()=>{document.getElementById('providerConfig').style.display='none';S.selectedProvider=null;renderProviders()});
 document.getElementById('cancelCustom').addEventListener('click',()=>{document.getElementById('customProviderForm').style.display='none'});
 document.getElementById('saveCustom').addEventListener('click',()=>{const id=document.getElementById('customId').value.trim(),url=document.getElementById('customUrl').value.trim(),kind=customKindValue;
@@ -584,7 +615,7 @@ document.getElementById('customProviderForm').style.display='none';S.selectedPro
 
 // ══ CENTRAL KEYS TAB ══
 function maskKey(k){if(!k)return'••••••••';if(k.length<=8)return'••••••••';return k.slice(0,3)+'*...*'+k.slice(-4)}
-function copyKey(k){navigator.clipboard.writeText(k).then(()=>toast('Key copied ✓')).catch(()=>showModal('Copy failed','Clipboard unavailable — reveal and select manually.'))}
+function copyKey(k){navigator.clipboard.writeText(k).then(()=>toast('Key copied ✓')).catch(()=>showModal('Copy failed','Clipboard unavailable — reveal and select manually.','navigator.clipboard.writeText failed.\nClipboard API may require a secure context (HTTPS) or user gesture.'))}
 function renderKeysCentral(){const r=document.getElementById('keysCentral');if(!r)return;const ids=Object.keys(S.providers).filter(k=>S.providers[k]);if(!ids.length){r.innerHTML='<div class="empty-state" style="padding:30px 10px"><p>No providers configured yet.</p></div>';return}
  let tb='<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap"><div class="custom-select" id="centralAddProviderSelect"></div><button class="btn btn-primary btn-sm" id="centralAddKeyBtn">+ Add key</button></div>';
  let h='';ids.forEach(id=>{const p=S.providers[id],keys=Array.isArray(p.keys)?p.keys:[];h+='<div class="keys-group"><div class="keys-group-head" style="display:flex;align-items:center;justify-content:space-between"><span class="provider-name" style="font-weight:600;color:var(--fg)">'+esc(id)+'</span><button class="btn btn-secondary btn-sm" data-add="'+esc(id)+'">+ Add key</button></div>';if(!keys.length){h+='<div class="key-row"><div class="masked" style="color:var(--fg3)">No keys added</div></div>'}else{keys.forEach((key,i)=>{h+='<div class="key-row" data-pid="'+esc(id)+'" data-idx="'+i+'"><div class="masked">'+maskKey(key)+'</div><div class="eye-btn" role="button" tabindex="0" aria-label="Toggle key '+(i+1)+'">'+EYE_CLOSED+'</div><button class="key-act copy-btn" title="Copy">⧉</button><button class="key-act regen-btn" title="Regenerate">⟳</button><button class="key-act del-btn btn-danger" title="Delete">✕</button></div>'})}h+='</div>'});
@@ -593,13 +624,13 @@ function renderKeysCentral(){const r=document.getElementById('keysCentral');if(!
  createCustomSelect('centralAddProviderSelect',ids.map(k=>({value:k,label:k})),centralAddProviderValue,v=>{centralAddProviderValue=v},false);
  const addBtn=document.getElementById('centralAddKeyBtn');if(addBtn)addBtn.onclick=()=>addKeyCentral(centralAddProviderValue);
  r.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>addKeyCentral(b.dataset.add));r.querySelectorAll('.key-row[data-pid]').forEach(row=>{const pid=row.dataset.pid,idx=+row.dataset.idx,key=S.providers[pid].keys[idx],eye=row.querySelector('.eye-btn'),mask=row.querySelector('.masked');let v=false;eye.onclick=()=>{v=!v;mask.textContent=v?key:maskKey(key);mask.classList.toggle('visible',v);eye.innerHTML=v?EYE_OPEN:EYE_CLOSED};eye.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();eye.click()}};row.querySelector('.copy-btn').onclick=()=>copyKey(key);row.querySelector('.del-btn').onclick=()=>deleteKeyCentral(pid,idx);row.querySelector('.regen-btn').onclick=()=>regenKeyCentral(pid,idx)})}
-async function addKeyCentral(pid){const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k||!S.providers[pid])return;const r=await persistAddKey(pid,k);if(!r.ok){showModal('Could not save key',r.error);return}renderKeysCentral();renderProviders();toast('Key added ✓ (verified)')}
-async function deleteKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Delete key',msg:'Delete this key for <strong>'+esc(pid)+'</strong>? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not delete key',r.error);return}renderKeysCentral();renderProviders();toast('Key deleted ✓ (verified)')}
-async function regenKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Regenerate key',msg:'The existing key for <strong>'+esc(pid)+'</strong> will be removed and replaced. Continue?',confirmText:'Regenerate',cancelText:'Cancel'});if(!ok)return;const k=await openDialog({type:'prompt',title:'New API key',msg:'Paste the new API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Save'});if(!k)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not regenerate key',r.error);return}renderKeysCentral();renderProviders();toast('Key regenerated ✓ (verified)')}
+async function addKeyCentral(pid){const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k||!S.providers[pid])return;const r=await persistAddKey(pid,k);if(!r.ok){showModal('Could not save key',r.error,r.details);return}renderKeysCentral();renderProviders();toast('Key added ✓ (verified)')}
+async function deleteKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Delete key',msg:'Delete this key for <strong>'+esc(pid)+'</strong>? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not delete key',r.error,r.details);return}renderKeysCentral();renderProviders();toast('Key deleted ✓ (verified)')}
+async function regenKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Regenerate key',msg:'The existing key for <strong>'+esc(pid)+'</strong> will be removed and replaced. Continue?',confirmText:'Regenerate',cancelText:'Cancel'});if(!ok)return;const k=await openDialog({type:'prompt',title:'New API key',msg:'Paste the new API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Save'});if(!k)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not regenerate key',r.error,r.details);return}renderKeysCentral();renderProviders();toast('Key regenerated ✓ (verified)')}
 
 // ══ DEVICE LOGIN (kiro / antigravity) ══
 function initDeviceLogin(){const b=document.getElementById('deviceLoginBtn');if(b)b.onclick=deviceLogin;loadDeviceAccounts()}
-async function deviceLogin(){const p=deviceProviderValue,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error);s.textContent='';return}if(d.auth_url){googleLogin(d,s)}else{devicePoll(d,s)}}catch(e){showModal('Device login failed',e.message);s.textContent=''}}
+async function deviceLogin(){const p=deviceProviderValue,s=document.getElementById('deviceStatus');s.textContent='Initiating device login…';try{const r=await fetch('/api/device/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p})});const d=await r.json();if(d.error){showModal('Device login failed',d.error,'POST /api/device/login\nProvider: '+p+'\n\nResponse:\n'+JSON.stringify(d,null,2));s.textContent='';return}if(d.auth_url){googleLogin(d,s)}else{devicePoll(d,s)}}catch(e){showModal('Device login failed',e.message,'POST /api/device/login\nProvider: '+p+'\n\n'+(e.stack||e.message||String(e)));s.textContent=''}}
 function devicePoll(d,s){const link=d.verification_uri_complete||d.verification_uri;const html='Visit <a href="'+esc(link)+'" target="_blank" rel="noopener" style="color:var(--accent2)">'+esc(link)+'</a> and enter code:<br><br><div style="font-size:1.7rem;font-weight:700;letter-spacing:.18em;font-family:var(--mono);color:var(--fg);text-align:center;padding:10px 0">'+esc(d.user_code)+'</div><div style="text-align:center;color:var(--fg3)" id="devicePollStatus">waiting for approval…</div>';openDialog({type:'alert',title:'Device Login — '+d.provider,msg:html,icon:false});fetch('/api/device/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:d.provider,device_code:d.device_code})}).then(r=>r.json()).then(pd=>{const st=document.getElementById('devicePollStatus');if(!st)return;if(pd.ok){st.textContent='✔ approved!';st.style.color='var(--green)';const id=pd.identity||(pd.account&&pd.account.account_id)||'';document.getElementById('dialogMsg').innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(id)+'</strong>.</div>';if(s)s.textContent='Connected as '+id;toast('Device account connected');loadDeviceAccounts()}else if(pd.error){st.textContent='✕ '+pd.error;st.style.color='var(--red)';if(s)s.textContent=''}}).catch(e=>{const st=document.getElementById('devicePollStatus');if(st){st.textContent='✕ '+e.message;st.style.color='var(--red)';if(s)s.textContent=''}})}
 function googleLogin(d,s){const html='<div style="text-align:center"><p style="margin:0 0 14px">Authorize xrouter to use your Google (antigravity) account.</p><a class="btn btn-primary" href="'+esc(d.auth_url)+'" target="_blank" rel="noopener">Open Google Login</a><div style="margin-top:14px;color:var(--fg3);font-size:.82rem" id="googleWait">waiting for authorization…</div></div>';openDialog({type:'alert',title:'Google Login — antigravity',msg:html,icon:false});const start=Date.now();const iv=setInterval(async()=>{try{const r=await fetch('/api/device/accounts');const j=await r.json();const found=(j.accounts||[]).find(a=>a.provider==='antigravity');if(found){clearInterval(iv);const st=document.getElementById('googleWait');if(st){st.textContent='✔ connected as '+found.account_id;st.style.color='var(--green)'}const dm=document.getElementById('dialogMsg');if(dm)dm.innerHTML+='<div style="margin-top:10px;color:var(--green)">Connected as <strong>'+esc(found.account_id)+'</strong>.</div>';if(s)s.textContent='Connected as '+found.account_id;toast('Google account connected');loadDeviceAccounts()}else if(Date.now()-start>300000){clearInterval(iv);const st=document.getElementById('googleWait');if(st){st.textContent='✕ timed out — restart login';st.style.color='var(--red)'}}}catch(e){}},2000)}
 async function loadDeviceAccounts(){const el=document.getElementById('deviceAccounts');if(!el)return;try{const r=await fetch('/api/device/accounts');if(!r.ok)return;const d=await r.json();if(!d.accounts||!d.accounts.length){el.innerHTML='<div style="font-size:.8rem;color:var(--fg3)">No device accounts connected.</div>';return}el.innerHTML='<div style="font-size:.78rem;color:var(--fg3);margin-bottom:8px;font-weight:500">Connected device accounts</div>'+d.accounts.map(a=>'<div class="key-row"><div class="masked">'+esc(a.provider)+' · '+esc(a.account_id)+'</div></div>').join('')}catch(e){}}
@@ -627,16 +658,17 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
   async function fetchModels(){const pid=fetchProviderValue,ftype=fetchTypeValue;if(!pid||!S.providers[pid]){toast('Select a provider',true);return}
   const p=S.providers[pid];if(!p.keys||!p.keys.length){toast('Add an API key first',true);return}
   const btn=document.getElementById('fetchModelsBtn');btn.disabled=true;btn.innerHTML=`Fetching<span class="dots"><span></span><span></span><span></span></span>`;
-  try{const r=await fetch(p.base_url.replace(/\/$/,'')+'/models',{headers:{'Authorization':'Bearer '+p.keys[0]}});
-   if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
-   if(d.error)throw new Error(d.error);
+  try{const url=p.base_url.replace(/\/$/,'')+'/models';const r=await fetch(url,{headers:{'Authorization':'Bearer '+p.keys[0]}});
+   if(!r.ok){let bodyText='';try{bodyText=await r.text()}catch(e){}showModal('Model fetch failed','HTTP '+r.status,url+'\nHTTP '+r.status+' '+r.statusText+(bodyText?'\n\n'+bodyText:''));return}
+   const d=await r.json();
+   if(d.error){showModal('Model fetch failed',d.error,url+'\n\nResponse:\n'+JSON.stringify(d,null,2));return}
    let ms=(d.data||d||[]).map(m=>({id:m.id||m.name||String(m),owned_by:m.owned_by||'',free:m.free===true}));
   // Image-model heuristic (flux/sdxl/dall-e/stable-diffusion/imagen/ideogram/image)
   const isImg=id=>{const n=String(id).toLowerCase();return n.includes('flux')||n.includes('sdxl')||n.includes('dall-e')||n.includes('dall_e')||n.includes('stable-diffusion')||n.includes('stable_diffusion')||n.includes('imagen')||n.includes('ideogram')||n.includes('image')};
   ms=ms.map(m=>({...m,image:isImg(m.id)}));
   if(ftype==='images')ms=ms.filter(m=>m.image);else if(ftype==='text')ms=ms.filter(m=>!m.image);
    S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];modelPage=0;document.getElementById('modelArea').style.display='';document.getElementById('modelHint').style.display='none';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
-  catch(e){showModal('Model fetch failed',e.message)}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
+   catch(e){showModal('Model fetch failed',e.message,'GET '+p.base_url.replace(/\/$/,'')+'/models\n\n'+(e.stack||e.message||String(e)))}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
 
 const MODELS_PER_PAGE=50;
 function getFilteredModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=fetchProviderValue,models=S.modelCache[pid]||[];
@@ -666,7 +698,7 @@ const prevLen=ex?ex.entries.length:0;
 if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}else{S._dirty=true;S.tiers.push({name:tn,entries});}
 const r=await persist();
 if(!r.ok){
-  showModal('Could not save tier',r.error);
+  showModal('Could not save tier',r.error,r.details);
   if(createdNew){const idx=S.tiers.findIndex(t=>t.name===tn);if(idx>=0)S.tiers.splice(idx,1)}
   else if(ex){ex.entries.length=prevLen}
   return;
@@ -674,7 +706,7 @@ if(!r.ok){
  renderSavedModels();renderTiers();toast(S.selectedModels.size+' models → tier "'+tn+'" ✓ (verified)');updateSteps()}
 
 // ══ TIERS ══
-function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S._dirty=true;S.tiers.push({name:n,entries:[]});const r=await persist();if(!r.ok){const idx=S.tiers.findIndex(t=>t.name===n);if(idx>=0)S.tiers.splice(idx,1);showModal('Could not create tier',r.error);return}renderSavedModels();renderTiers();toast('Tier "'+n+'" created ✓ (verified)')})}
+function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S._dirty=true;S.tiers.push({name:n,entries:[]});const r=await persist();if(!r.ok){const idx=S.tiers.findIndex(t=>t.name===n);if(idx>=0)S.tiers.splice(idx,1);showModal('Could not create tier',r.error,r.details);return}renderSavedModels();renderTiers();toast('Tier "'+n+'" created ✓ (verified)')})}
 
 function renderTiers(){const l=document.getElementById('tierList'),e=document.getElementById('tierEmpty');l.innerHTML='';if(!S.tiers.length){e.style.display='';return}e.style.display='none';
 S.tiers.forEach((tier,ti)=>{const c=document.createElement('div');c.className='tier-card';c.draggable=true;c.dataset.idx=ti;
@@ -722,8 +754,8 @@ const g=ctx.createLinearGradient(0,P.t,0,P.t+cH);g.addColorStop(0,fill);g.addCol
 function initRouterAccess(){const g=document.getElementById('genKeyBtn'),d=document.getElementById('disableKeyBtn');if(g)g.onclick=generateApiKey;if(d)d.onclick=disableApiKey;loadAuthStatus()}
 async function loadAuthStatus(){const el=document.getElementById('authBadge'),hint=document.getElementById('authHint');if(!el)return;try{const r=await fetch('/api/auth/status');if(!r.ok)return;const d=await r.json();if(d.enabled){el.textContent='Enabled';el.style.background='rgba(34,197,94,.12)';el.style.color='var(--green)';hint.textContent='Router requires a Bearer token.';if(document.getElementById('disableKeyBtn'))document.getElementById('disableKeyBtn').disabled=false}else{el.textContent='Disabled';el.style.background='rgba(113,113,122,.15)';el.style.color='var(--fg3)';hint.textContent='Open access — no auth required.'}}catch(e){}}
 async function verifyAuthEnabled(expected){try{const r=await fetch('/api/auth/status');if(!r.ok)return false;const d=await r.json();return !!d.enabled===expected;}catch(e){return false}}
-async function generateApiKey(){try{const r=await fetch('/api/auth/enable',{method:'POST'});const d=await r.json();if(d.error){showModal('Failed to enable',d.error);return}if(!d.token){showModal('Failed to enable','No token returned');return}showApiKeyModal(d.token);const verified=await verifyAuthEnabled(true);if(!verified){showModal('Auth enable verification failed','The key was generated but could not be confirmed active. Check the router config.');return}loadAuthStatus();try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}}catch(e){showModal('Failed to enable',e.message)}}
-async function disableApiKey(){const ok=await openDialog({type:'confirm',title:'Disable router auth',msg:'This removes the API key and makes the router open access (no auth). Continue?',confirmText:'Disable',cancelText:'Cancel'});if(!ok)return;try{const r=await fetch('/api/auth/disable',{method:'POST'});const d=await r.json();if(d.error){showModal('Failed to disable',d.error);return}const verified=await verifyAuthEnabled(false);if(!verified){showModal('Auth disable verification failed','The key may not have been removed. Check the router config.');return}toast('Router auth disabled');loadAuthStatus();try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}}catch(e){showModal('Failed to disable',e.message)}}
+async function generateApiKey(){try{const r=await fetch('/api/auth/enable',{method:'POST'});const d=await r.json();if(d.error){showModal('Failed to enable',d.error,'POST /api/auth/enable\n\nResponse:\n'+JSON.stringify(d,null,2));return}if(!d.token){showModal('Failed to enable','No token returned','POST /api/auth/enable\n\nResponse:\n'+JSON.stringify(d,null,2));return}showApiKeyModal(d.token);const verified=await verifyAuthEnabled(true);if(!verified){showModal('Auth enable verification failed','The key was generated but could not be confirmed active. Check the router config.','POST /api/auth/enable succeeded but GET /api/auth/status does not confirm enabled state.');return}loadAuthStatus();try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}}catch(e){showModal('Failed to enable',e.message,'POST /api/auth/enable\n\n'+(e.stack||e.message||String(e)))}}
+async function disableApiKey(){const ok=await openDialog({type:'confirm',title:'Disable router auth',msg:'This removes the API key and makes the router open access (no auth). Continue?',confirmText:'Disable',cancelText:'Cancel'});if(!ok)return;try{const r=await fetch('/api/auth/disable',{method:'POST'});const d=await r.json();if(d.error){showModal('Failed to disable',d.error,'POST /api/auth/disable\n\nResponse:\n'+JSON.stringify(d,null,2));return}const verified=await verifyAuthEnabled(false);if(!verified){showModal('Auth disable verification failed','The key may not have been removed. Check the router config.','POST /api/auth/disable succeeded but GET /api/auth/status does not confirm disabled state.');return}toast('Router auth disabled');loadAuthStatus();try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}}catch(e){showModal('Failed to disable',e.message,'POST /api/auth/disable\n\n'+(e.stack||e.message||String(e)))}}
 function showApiKeyModal(token){const msg='<div style="font-size:.82rem;color:var(--fg2);margin-bottom:10px">Your router API key (shown <strong>only once</strong>). Store it now — it will not be displayed again in full.</div>'+
   '<div id="apiKeyBox" style="font-family:var(--mono);font-size:.85rem;background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--radius-xs);padding:12px 14px;word-break:break-all;color:var(--fg);margin-bottom:12px">'+esc(token)+'</div>'+
   '<div style="display:flex;gap:10px;align-items:center"><button id="copyKeyBtn" class="btn btn-secondary btn-sm">Copy key</button><span id="copyKeyMsg" style="font-size:.8rem;color:var(--green)"></span></div>'+

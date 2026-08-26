@@ -653,22 +653,32 @@ fn device_poll(body: &str) -> (String, String) {
             "400 Bad Request".into(),
         );
     }
+    // Peek (clone) the pending init instead of removing it: if the poll fails
+    // (timeout, user dismisses the consent page, transient network error) the
+    // entry must survive so the UI can retry the same device_code. It is only
+    // removed once the login definitively succeeds.
     let init = match KIRO_PENDING
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap()
-        .remove(&device_code)
+        .get(&device_code)
+        .cloned()
     {
         Some(i) => i,
         None => {
             return (
-                json_error("no pending device login for that device_code"),
+                json_error("no pending device login for that device_code — start a new login"),
                 "400 Bad Request".into(),
             )
         }
     };
     match rt().block_on(xrouter_auth::poll_device_login(&init)) {
         Ok(acct) => {
+            KIRO_PENDING
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap()
+                .remove(&device_code);
             let mut store = xrouter_auth::DeviceStore::load()
                 .unwrap_or_else(|_| xrouter_auth::DeviceStore::empty());
             store.add_account(acct.clone());

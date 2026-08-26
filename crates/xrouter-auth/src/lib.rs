@@ -447,13 +447,22 @@ async fn register_kiro_client(region: &str) -> Result<(String, String)> {
     assert_valid_aws_region(region)?;
     let url = kiro_register_endpoint(region);
     let client = reqwest::Client::new();
+    // AWS SSO OIDC RegisterClient expects a JSON body with `scopes` as an
+    // ARRAY, and `grantTypes` is REQUIRED whenever scopes are requested
+    // (omitting it yields 400 invalid_request). Mirrors OmniRoute's payload.
+    let scopes: Vec<String> = kiro_scopes().split_whitespace().map(str::to_string).collect();
+    let body = serde_json::json!({
+        "clientName": "xrouter",
+        "clientType": "public",
+        "scopes": scopes,
+        "grantTypes": [
+            "urn:ietf:params:oauth:grant-type:device_code",
+            "refresh_token"
+        ]
+    });
     let resp = client
         .post(&url)
-        .form(&[
-            ("clientName", "xrouter"),
-            ("clientType", "public"),
-            ("scopes", &kiro_scopes()),
-        ])
+        .json(&body)
         .send()
         .await
         .context("kiro client register request")?;
@@ -487,14 +496,16 @@ async fn kiro_device_authorization(
 ) -> Result<DeviceLoginInit> {
     let url = kiro_device_auth_endpoint(region);
     let client = reqwest::Client::new();
+    // AWS SSO OIDC StartDeviceAuthorization expects a JSON body with
+    // clientId/clientSecret/startUrl (scopes were already granted at client
+    // registration — sending them here causes 400 invalid_request).
     let resp = client
         .post(&url)
-        .form(&[
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("startUrl", "https://view.awsapps.com/start"),
-            ("scopes", &kiro_scopes()),
-        ])
+        .json(&serde_json::json!({
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "startUrl": "https://view.awsapps.com/start"
+        }))
         .send()
         .await
         .context("kiro device auth request")?;
