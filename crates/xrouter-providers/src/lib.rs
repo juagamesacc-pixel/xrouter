@@ -299,7 +299,13 @@ impl DeviceProvider {
 #[async_trait]
 impl Provider for DeviceProvider {
     async fn list_models(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
-        match self.kind.as_str() {
+        // `self.kind` may be stored as the bare name (`kiro`) or the
+        // device-normalized form (`device:kiro`). Normalize before matching so
+        // both route to the correct device-specific discovery path instead of
+        // falling through to the generic `GET {base}/models` fallback (which
+        // 403s for kiro/antigravity).
+        let normalized = device_provider_name(&self.kind).to_string();
+        match normalized.as_str() {
             "kiro" => self.list_models_kiro(key).await,
             "antigravity" => self.list_models_antigravity(key).await,
             _ => {
@@ -653,5 +659,18 @@ mod tests {
     fn fallback_catalogs_match_spec() {
         assert_eq!(KIRO_FALLBACK.len(), 6);
         assert_eq!(ANTIGRAVITY_FALLBACK.len(), 6);
+    }
+
+    #[test]
+    fn device_kind_normalization_routes_correctly() {
+        // The stored kind may be the bare name or the device-normalized form.
+        // Both must route to the matching device-specific discovery arm rather
+        // than the generic `GET {base}/models` fallback (the kiro 403 bug).
+        assert_eq!(device_provider_name("kiro"), "kiro");
+        assert_eq!(device_provider_name("device:kiro"), "kiro");
+        assert_eq!(device_provider_name("antigravity"), "antigravity");
+        assert_eq!(device_provider_name("device:antigravity"), "antigravity");
+        // A generic device kind stays generic (no special-cased arm).
+        assert_eq!(device_provider_name("device:somethingelse"), "somethingelse");
     }
 }
