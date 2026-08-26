@@ -604,8 +604,8 @@ async fn models_list(provider: Option<String>, free_only: bool) -> anyhow::Resul
 // Default upstream base URLs for device providers (overridable in config).
 fn default_device_base_url(provider: &str) -> String {
     match provider {
-        "kiro" => "https://api.kiro.dev/v1".to_string(),
-        "antigravity" => "https://api.cline.bot/api/v1".to_string(),
+        "kiro" => "https://codewhisperer.us-east-1.amazonaws.com".to_string(),
+        "antigravity" => "https://daily-cloudcode-pa.googleapis.com".to_string(),
         other => format!("https://{}.invalid/v1", other),
     }
 }

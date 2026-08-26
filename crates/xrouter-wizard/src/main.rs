@@ -236,6 +236,16 @@ fn load_config_from(path: &std::path::Path) -> Config {
 ///   * `accounts`  = metadata synced from the store (account_id / display_name /
 ///                   provider, with empty tokens)
 fn heal_device_providers(cfg: &mut Config) {
+    // Self-heal pass 1: rewrite any device provider whose base_url is a known-bad
+    // placeholder (e.g. the dead https://api.kiro.dev/v1 from an earlier login)
+    // to the correct runtime endpoint. This runs regardless of the device store
+    // so a persisted bad URL is corrected even if the account was wiped.
+    for p in cfg.providers.values_mut() {
+        if let Some(correct) = corrected_device_base_url(&p.base_url) {
+            p.base_url = correct;
+        }
+    }
+
     let store = match xrouter_auth::DeviceStore::load() {
         Ok(s) => s,
         Err(_) => return,
@@ -251,7 +261,14 @@ fn heal_device_providers(cfg: &mut Config) {
         }
     }
     for prov in prov_names {
-        if cfg.providers.contains_key(&prov) {
+        // Self-heal: an earlier login may have persisted a dead placeholder
+        // base_url (e.g. https://api.kiro.dev/v1). If this device provider
+        // already exists in the config with one of those known-bad URLs, rewrite
+        // it to the correct runtime endpoint instead of skipping it.
+        if let Some(p) = cfg.providers.get_mut(&prov) {
+            if let Some(correct) = corrected_device_base_url(&p.base_url) {
+                p.base_url = correct;
+            }
             continue;
         }
         let accounts: Vec<Value> = store
@@ -717,9 +734,25 @@ fn rt() -> &'static tokio::runtime::Runtime {
 
 fn device_base_url(provider: &str) -> String {
     match provider {
-        "kiro" => "https://api.kiro.dev/v1".to_string(),
-        "antigravity" => "https://api.cline.bot/api/v1".to_string(),
+        "kiro" => "https://codewhisperer.us-east-1.amazonaws.com".to_string(),
+        "antigravity" => "https://daily-cloudcode-pa.googleapis.com".to_string(),
         other => format!("https://{}.invalid/v1", other),
+    }
+}
+
+/// Known-bad placeholder base URLs that earlier xrouter versions persisted for
+/// device providers (kiro / antigravity). These hosts do not resolve, so any
+/// config still pointing at them must be rewritten to the correct runtime
+/// endpoint. Returns the corrected URL, or `None` if `current` is fine.
+fn corrected_device_base_url(current: &str) -> Option<String> {
+    match current {
+        "https://api.kiro.dev/v1" => {
+            Some("https://codewhisperer.us-east-1.amazonaws.com".to_string())
+        }
+        "https://api.cline.bot/api/v1" => {
+            Some("https://daily-cloudcode-pa.googleapis.com".to_string())
+        }
+        _ => None,
     }
 }
 
@@ -1461,5 +1494,48 @@ expires_at = ""
         );
 
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn heal_rewrites_known_bad_device_base_urls() {
+        let p = tmp_config_path();
+        let _ = std::fs::remove_file(&p);
+
+        // Seed a config with the dead placeholder URLs that earlier versions
+        // persisted for kiro / antigravity (no device store needed — the
+        // general correction pass in `heal_device_providers` must fix these).
+        let seeded = r#"
+[settings]
+default_tier = ""
+
+[providers.kiro]
+kind = "kiro"
+base_url = "https://api.kiro.dev/v1"
+enabled = true
+quota_ban_secs = 300
+keys = []
+
+[providers.antigravity]
+kind = "antigravity"
+base_url = "https://api.cline.bot/api/v1"
+enabled = true
+quota_ban_secs = 300
+keys = []
+"#;
+        std::fs::write(&p, seeded).unwrap();
+
+        let loaded = load_config_from(&p);
+        assert_eq!(
+            loaded.providers.get("kiro").unwrap().base_url,
+            "https://codewhisperer.us-east-1.amazonaws.com",
+            "kiro bad base_url must be rewritten"
+        );
+        assert_eq!(
+            loaded.providers.get("antigravity").unwrap().base_url,
+            "https://daily-cloudcode-pa.googleapis.com",
+            "antigravity bad base_url must be rewritten"
+        );
+
+        let _ = std::fs::remove_file(&p);
     }
 }
