@@ -647,7 +647,7 @@ async fn device_login_google() -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://localhost:{}/oauth/callback", port);
-    let init = xrouter_auth::build_google_auth_url(&redirect_uri);
+    let init = xrouter_auth::build_google_auth_url(&redirect_uri)?;
 
     println!("Initiating Google (antigravity) login…");
     println!("Open this URL in your browser:");

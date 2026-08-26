@@ -791,7 +791,15 @@ fn device_login(body: &str) -> (String, String) {
     if prov_name == "antigravity" {
         // PKCE browser flow: build the consent URL and stash the verifier
         // server-side for the /oauth/callback exchange.
-        let init = xrouter_auth::build_google_auth_url(GOOGLE_REDIRECT_URI);
+        let init = match xrouter_auth::build_google_auth_url(GOOGLE_REDIRECT_URI) {
+            Ok(init) => init,
+            Err(e) => {
+                return (
+                    json_error(&format!("antigravity login unavailable: {}", e)),
+                    "503 Service Unavailable".into(),
+                );
+            }
+        };
         *GOOGLE_PENDING
             .get_or_init(|| Mutex::new(None))
             .lock()

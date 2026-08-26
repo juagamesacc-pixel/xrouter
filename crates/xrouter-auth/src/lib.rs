@@ -696,20 +696,29 @@ pub struct GoogleLoginInit {
 /// `redirect_uri` must be a loopback URL (e.g. `http://localhost:3001/oauth/callback`)
 /// that the caller is listening on. The returned [`GoogleLoginInit`] carries the
 /// `code_verifier` + `state` needed to complete the exchange.
-pub fn build_google_auth_url(redirect_uri: &str) -> GoogleLoginInit {
+///
+/// Returns an error (instead of panicking) when the `XROUTER_GOOGLE_CLIENT_ID`
+/// / `XROUTER_GOOGLE_CLIENT_SECRET` env vars are missing, so callers (e.g. the
+/// wizard server thread) can surface a clean JSON error rather than crashing.
+pub fn build_google_auth_url(redirect_uri: &str) -> Result<GoogleLoginInit> {
     let code_verifier = pkce_verifier();
     let code_challenge = pkce_challenge(&code_verifier);
     let state = random_url_safe(16);
     let scope = "https://www.googleapis.com/auth/cloud-platform \
                  https://www.googleapis.com/auth/userinfo.email \
                  https://www.googleapis.com/auth/userinfo.profile";
-    let mut url = Url::parse(&google_auth_url()).expect("valid google auth url");
+    let mut url = Url::parse(&google_auth_url()).context("valid google auth url")?;
     {
         let mut q = url.query_pairs_mut();
-        // Validate the client id is configured *before* building the URL so we
-        // fail loudly (not by sending an empty client_id to Google).
-        let client_id = google_client_id()
-            .expect("XROUTER_GOOGLE_CLIENT_ID must be set before starting the antigravity login flow");
+        // Validate the client credentials are configured *before* building the
+        // URL so we fail with a helpful message (not by sending an empty
+        // client_id to Google, and not by panicking the server thread).
+        let client_id = google_client_id().context(
+            "Antigravity Google OAuth not configured: set XROUTER_GOOGLE_CLIENT_ID and XROUTER_GOOGLE_CLIENT_SECRET before starting the wizard (see docs; e.g. export XROUTER_GOOGLE_CLIENT_ID=...). The kiro flow does not need these.",
+        )?;
+        let _client_secret = google_client_secret().context(
+            "Antigravity Google OAuth not configured: set XROUTER_GOOGLE_CLIENT_ID and XROUTER_GOOGLE_CLIENT_SECRET before starting the wizard (see docs; e.g. export XROUTER_GOOGLE_CLIENT_ID=...). The kiro flow does not need these.",
+        )?;
         q.append_pair("client_id", &client_id);
         q.append_pair("redirect_uri", redirect_uri);
         q.append_pair("response_type", "code");
@@ -720,12 +729,12 @@ pub fn build_google_auth_url(redirect_uri: &str) -> GoogleLoginInit {
         q.append_pair("code_challenge_method", "S256");
         q.append_pair("state", &state);
     }
-    GoogleLoginInit {
+    Ok(GoogleLoginInit {
         auth_url: url.to_string(),
         code_verifier,
         redirect_uri: redirect_uri.to_string(),
         state,
-    }
+    })
 }
 
 /// Exchange the `code` returned by Google's loopback redirect for tokens, derive
@@ -1197,7 +1206,7 @@ mod tests {
             "test-client-id.apps.googleusercontent.com",
         );
         std::env::set_var("XROUTER_GOOGLE_CLIENT_SECRET", "test-client-secret");
-        let init = build_google_auth_url("http://localhost:3001/oauth/callback");
+        let init = build_google_auth_url("http://localhost:3001/oauth/callback").unwrap();
         let url = Url::parse(&init.auth_url).expect("valid url");
         let q: HashMap<String, String> = url
             .query_pairs()
