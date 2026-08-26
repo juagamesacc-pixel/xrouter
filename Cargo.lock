@@ -2614,6 +2614,7 @@ name = "xrouter-balancer"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "rand",
  "serde",
  "tokio",
  "tracing",
@@ -2650,6 +2651,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "notify",
+ "rand",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2706,6 +2708,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "subtle",
  "sysinfo",
  "thiserror 2.0.20",
  "tokio",

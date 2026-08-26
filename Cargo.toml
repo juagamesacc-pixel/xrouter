@@ -39,3 +39,4 @@ tokio-stream = { version = "0.1.17" }
 hdrhistogram = { version = "7.5" }
 sysinfo = { version = "0.30" }
 rand = { version = "0.10" }
+subtle = { version = "2.6" }

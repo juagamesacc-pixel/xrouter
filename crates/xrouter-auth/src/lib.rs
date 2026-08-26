@@ -26,9 +26,20 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use rand::RngExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+/// SECURITY NOTE — secret handling.
+///
+/// All device-login secrets (OAuth access/refresh tokens) are exchanged and
+/// refreshed here via `reqwest` **only**. Never shell out to `curl` (or any
+/// external process) to perform these exchanges: command-line arguments and
+/// environment are visible to other local users via `ps`/`/proc`, which would
+/// leak the tokens. Other crates in this workspace (e.g. the wizard) should
+/// likewise prefer `reqwest` over spawning `curl` for any secret-bearing
+/// request.
 
 /// Provider names that authenticate via the device-login flow.
 pub const DEVICE_PROVIDERS: &[&str] = &["kiro", "antigravity"];
@@ -68,7 +79,7 @@ pub fn upstream_extra_headers(kind: &str) -> HeaderMap {
 ///
 /// Serialized into the off-RAM device store. `account_id` + `provider` form the
 /// unique key used by [`DeviceStore::add_account`] for de-duplication.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeviceAccountConfig {
     /// Stable per-provider identifier chosen at login time (e.g. email/local id).
     pub account_id: String,
@@ -77,6 +88,9 @@ pub struct DeviceAccountConfig {
     /// Bare provider name (`kiro`, `antigravity`, ...).
     pub provider: String,
     /// Current OAuth access token, sent upstream as `Bearer`.
+    ///
+    /// This is a secret. It is intentionally **not** shown by the `Debug` impl
+    /// (see the manual `impl Debug` below) and should never be logged in full.
     pub access_token: String,
     /// Refresh token (if the provider issued one). `None` means we can only use
     /// the access token until it expires.
@@ -94,6 +108,44 @@ pub struct DeviceAccountConfig {
 }
 
 impl DeviceAccountConfig {
+    /// Masked view of the access token for logs/display.
+    ///
+    /// JWTs must **never** be truncated to their last 4 characters (that leaks
+    /// a meaningful fraction of the credential). Instead we either show a
+    /// constant placeholder, or — for tokens that look like JWTs (`eyJ…`) — a
+    /// 3-character `eyJ…` prefix that only identifies the token type without
+    /// disclosing any secret material.
+    pub fn masked_access_token(&self) -> String {
+        if self.access_token.starts_with("eyJ") {
+            format!("{}…", &self.access_token[..self.access_token.len().min(3)])
+        } else {
+            "<device-token>".to_string()
+        }
+    }
+}
+
+impl std::fmt::Debug for DeviceAccountConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceAccountConfig")
+            .field("account_id", &self.account_id)
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("access_token", &"<device-token>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<device-token>"),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+impl DeviceAccountConfig {
     /// True when the access token is expired (or will expire within 60s).
     fn needs_refresh(&self) -> bool {
         match self.expires_at {
@@ -107,7 +159,15 @@ impl DeviceAccountConfig {
 ///
 /// The `rr` field tracks round-robin position per provider so that
 /// [`DeviceStore::next_account`] cycles through accounts without duplicating
-/// them. It is skipped during (de)serialization.
+/// them. It is skipped during (de)serialization via `#[serde(skip)]`.
+///
+/// NOTE: because `rr` is `#[serde(skip)]`, the round-robin cursor is **reset to
+/// zero on every process restart** (it is not persisted to disk). This is
+/// acceptable: it only affects the starting point of the cycle, not correctness,
+/// and avoids leaking provider-account selection order into the on-disk secret
+/// store. If strict stickiness across restarts is ever required, switch this to
+/// `#[serde(default)]` (a `HashMap` deserializes fine from an absent field) so
+/// the cursor is persisted alongside the accounts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeviceStore {
     pub accounts: Vec<DeviceAccountConfig>,
@@ -127,7 +187,7 @@ impl DeviceStore {
     /// Load the store from disk. Returns an empty store when the file does not
     /// exist yet (first run). Errors only on malformed/unreadable content.
     pub fn load() -> Result<Self> {
-        let p = store_path();
+        let p = store_path()?;
         if !p.exists() {
             return Ok(Self::empty());
         }
@@ -138,7 +198,7 @@ impl DeviceStore {
 
     /// Persist the store to disk with 0600 permissions (secrets!).
     pub fn save(&self) -> Result<()> {
-        let p = store_path();
+        let p = store_path()?;
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent).context("create device store dir")?;
         }
@@ -552,7 +612,11 @@ pub fn build_google_auth_url(redirect_uri: &str) -> GoogleLoginInit {
     let mut url = Url::parse(&google_auth_url()).expect("valid google auth url");
     {
         let mut q = url.query_pairs_mut();
-        q.append_pair("client_id", &google_client_id());
+        // Validate the client id is configured *before* building the URL so we
+        // fail loudly (not by sending an empty client_id to Google).
+        let client_id = google_client_id()
+            .expect("XROUTER_GOOGLE_CLIENT_ID must be set before starting the antigravity login flow");
+        q.append_pair("client_id", &client_id);
         q.append_pair("redirect_uri", redirect_uri);
         q.append_pair("response_type", "code");
         q.append_pair("scope", scope);
@@ -575,11 +639,15 @@ pub fn build_google_auth_url(redirect_uri: &str) -> GoogleLoginInit {
 /// [`DeviceAccountConfig`].
 pub async fn complete_google_login(init: &GoogleLoginInit, code: &str) -> Result<DeviceAccountConfig> {
     let client = reqwest::Client::new();
+    // Validate the client credentials are configured *before* performing the
+    // exchange; otherwise we would silently send empty values to Google.
+    let client_id = google_client_id()?;
+    let client_secret = google_client_secret()?;
     let resp = client
         .post(google_token_url())
         .form(&[
-            ("client_id", google_client_id()),
-            ("client_secret", google_client_secret()),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
             ("code", code.to_string()),
             ("code_verifier", init.code_verifier.clone()),
             ("grant_type", "authorization_code".to_string()),
@@ -624,8 +692,8 @@ pub async fn complete_google_login(init: &GoogleLoginInit, code: &str) -> Result
         access_token,
         refresh_token,
         expires_at,
-        client_id: Some(google_client_id()),
-        client_secret: Some(google_client_secret()),
+        client_id: Some(google_client_id()?),
+        client_secret: Some(google_client_secret()?),
     })
 }
 
@@ -645,13 +713,16 @@ fn pkce_challenge(verifier: &str) -> String {
     base64_url_no_pad(&hasher.finalize())
 }
 
-/// `n` random bytes, base64url (no padding) — used for the OAuth `state`.
+/// `n` cryptographically-random bytes, base64url (no padding) — used for the
+/// OAuth `state` and similar nonces.
+///
+/// Each byte is drawn independently from the OS CSPRNG via `rand::rng().fill`,
+/// so the output has full `n`-byte entropy (the previous implementation cycled
+/// a single 32-byte buffer, which was both lower-entropy and biased for
+/// `n != 32`).
 fn random_url_safe(n: usize) -> String {
     let mut bytes = vec![0u8; n];
-    let r: [u8; 32] = rand::random();
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = r[i % 32];
-    }
+    rand::rng().fill(&mut bytes[..]);
     base64_url_no_pad(&bytes)
 }
 
@@ -716,7 +787,9 @@ async fn derive_kiro_identity(access_token: &str) -> String {
             return id;
         }
     }
-    // Fall back to decoding the access-token JWT claims (no signature check).
+    // Fall back to decoding the access-token JWT claims. This decode is
+    // unverified (see `decode_jwt_claims`); it is only used to read a
+    // display/account-key identity, never for authorization.
     if let Some(claims) = decode_jwt_claims(access_token) {
         if let Some(email) = claims.get("email").and_then(|x| x.as_str()) {
             if !email.is_empty() {
@@ -757,9 +830,17 @@ fn kiro_userinfo_endpoint() -> String {
     format!("https://oidc.{}.amazonaws.com/userinfo", kiro_region())
 }
 
-/// Decode the payload of a JWT (base64url, no signature verification) into a
-/// JSON value. Returns `None` when the token is not a 3-part JWT or the payload
-/// is not valid JSON.
+/// Decode the payload of a JWT (base64url, **NO signature verification**) into
+/// a JSON value. Returns `None` when the token is not a 3-part JWT or the
+/// payload is not valid JSON.
+///
+/// SECURITY: this is an *unverified* decode. It is used only to derive a
+/// non-secret, display/account-key identity (e.g. `email`/`sub`) when no
+/// userinfo endpoint is reachable. The actual access token is always validated
+/// upstream (by the provider when used as a `Bearer` credential, and by the
+/// refresh flow), so a forged/unsigned JWT here can at worst produce a wrong
+/// local account label — it can never grant access. Never use the result of
+/// this function for any authorization decision.
 fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -788,9 +869,16 @@ fn short_token_hash(token: &str) -> String {
 
 // ── provider-specific endpoints (env-overridable) ─────────────────────────────
 
-fn store_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".local/share/xrouter/device-store.json")
+/// Resolve the on-disk path of the device store.
+///
+/// Errors (rather than silently falling back to the current working directory)
+/// when `HOME` is unset, because writing secrets into `./.local/share/...`
+/// under an unexpected CWD could place them somewhere world-readable or
+/// simply wrong.
+fn store_path() -> Result<PathBuf> {
+    let home = std::env::var("HOME")
+        .map_err(|_| anyhow::anyhow!("HOME is not set; cannot locate the device token store"))?;
+    Ok(PathBuf::from(home).join(".local/share/xrouter/device-store.json"))
 }
 
 fn kiro_region() -> String {
@@ -816,12 +904,25 @@ fn token_endpoint(provider: &str) -> String {
     }
 }
 
-fn google_client_id() -> String {
-    std::env::var("XROUTER_GOOGLE_CLIENT_ID").unwrap_or_default()
+/// Google OAuth client id, from `XROUTER_GOOGLE_CLIENT_ID`.
+///
+/// Returns an error (not an empty string) when the variable is unset, so
+/// callers surface a clear misconfiguration instead of silently sending an
+/// empty `client_id` to Google and getting an opaque auth failure.
+fn google_client_id() -> Result<String> {
+    std::env::var("XROUTER_GOOGLE_CLIENT_ID").context(
+        "XROUTER_GOOGLE_CLIENT_ID is required for the antigravity/Google login flow but is not set",
+    )
 }
 
-fn google_client_secret() -> String {
-    std::env::var("XROUTER_GOOGLE_CLIENT_SECRET").unwrap_or_default()
+/// Google OAuth client secret, from `XROUTER_GOOGLE_CLIENT_SECRET`.
+///
+/// Returns an error (not an empty string) when the variable is unset; see
+/// [`google_client_id`] for rationale.
+fn google_client_secret() -> Result<String> {
+    std::env::var("XROUTER_GOOGLE_CLIENT_SECRET").context(
+        "XROUTER_GOOGLE_CLIENT_SECRET is required for the antigravity/Google login flow but is not set",
+    )
 }
 
 fn google_auth_url() -> String {
@@ -880,7 +981,7 @@ mod tests {
             .collect();
         assert_eq!(url.origin().ascii_serialization(), "https://accounts.google.com");
         assert_eq!(url.path(), "/o/oauth2/v2/auth");
-        assert_eq!(q.get("client_id").unwrap(), &google_client_id());
+        assert_eq!(q.get("client_id").unwrap(), &google_client_id().unwrap());
         assert_eq!(
             q.get("redirect_uri").unwrap(),
             "http://localhost:3001/oauth/callback"

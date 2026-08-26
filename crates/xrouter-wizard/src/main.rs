@@ -446,75 +446,89 @@ fn fetch_models(provider: &str) -> (String, String) {
     }
     let base = p.base_url.trim_end_matches('/');
     let url = format!("{}/models", base);
-    let key = &p.keys[0];
 
-    let out = Command::new("curl")
-        .args([
-            "-sS",
-            "-m",
-            "20",
-            "-H",
-            &format!("Authorization: Bearer {}", key),
-            &url,
-        ])
-        .output();
+    // Rotate through every configured key until one successfully returns models.
+    let mut last_err = String::from("no api keys available");
+    for key in &p.keys {
+        let out = Command::new("curl")
+            .args([
+                "-sS",
+                "-m",
+                "20",
+                "-H",
+                &format!("Authorization: Bearer {}", key),
+                &url,
+            ])
+            .output();
 
-    let out = match out {
-        Ok(o) => o,
-        Err(e) => {
-            return (
-                json_error(&format!("failed to invoke curl: {}", e)),
-                "500 Internal Server Error".into(),
-            )
-        }
-    };
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let msg = if stderr.is_empty() {
-            format!("curl exited with status {}", out.status)
-        } else {
-            stderr
+        let out = match out {
+            Ok(o) => o,
+            Err(e) => {
+                last_err = format!("failed to invoke curl: {}", e);
+                continue;
+            }
         };
-        return (json_error(&msg), "502 Bad Gateway".into());
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            last_err = if stderr.is_empty() {
+                format!("curl exited with status {}", out.status)
+            } else {
+                stderr
+            };
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        match serde_json::from_str::<Value>(&stdout) {
+            Ok(v) => {
+                // A provider error payload (no data) means this key didn't work —
+                // rotate to the next key instead of surfacing a dead response.
+                if v.get("error").is_some() && v.get("data").is_none() {
+                    last_err = format!(
+                        "provider error: {}",
+                        v.get("error")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("unknown")
+                    );
+                    continue;
+                }
+                let data = v
+                    .get("data")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let models: Vec<Value> = data
+                    .iter()
+                    .filter_map(|m| {
+                        let id = m
+                            .get("id")
+                            .and_then(|i| i.as_str())
+                            .or_else(|| m.get("name").and_then(|n| n.as_str()))?;
+                        let pricing = m.get("pricing");
+                        let prompt = pricing
+                            .and_then(|p| p.get("prompt"))
+                            .and_then(|x| x.as_str());
+                        let completion = pricing
+                            .and_then(|p| p.get("completion"))
+                            .and_then(|x| x.as_str());
+                        let free = is_free_model(id, prompt, completion);
+                        Some(serde_json::json!({ "id": id, "free": free }))
+                    })
+                    .collect();
+                return (
+                    serde_json::json!({ "data": models }).to_string(),
+                    "200 OK".into(),
+                );
+            }
+            Err(e) => {
+                last_err = format!("invalid JSON from provider: {}", e);
+                continue;
+            }
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    match serde_json::from_str::<Value>(&stdout) {
-        Ok(v) => {
-            let data = v
-                .get("data")
-                .and_then(|d| d.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let models: Vec<Value> = data
-                .iter()
-                .filter_map(|m| {
-                    let id = m
-                        .get("id")
-                        .and_then(|i| i.as_str())
-                        .or_else(|| m.get("name").and_then(|n| n.as_str()))?;
-                    let pricing = m.get("pricing");
-                    let prompt = pricing
-                        .and_then(|p| p.get("prompt"))
-                        .and_then(|x| x.as_str());
-                    let completion = pricing
-                        .and_then(|p| p.get("completion"))
-                        .and_then(|x| x.as_str());
-                    let free = is_free_model(id, prompt, completion);
-                    Some(serde_json::json!({ "id": id, "free": free }))
-                })
-                .collect();
-            (
-                serde_json::json!({ "data": models }).to_string(),
-                "200 OK".into(),
-            )
-        }
-        Err(e) => (
-            json_error(&format!("invalid JSON from provider: {}", e)),
-            "502 Bad Gateway".into(),
-        ),
-    }
+    (json_error(&last_err), "502 Bad Gateway".into())
 }
 
 // ── Device login (kiro / antigravity) ─────────────────────────────────────────

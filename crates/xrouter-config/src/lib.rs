@@ -183,7 +183,12 @@ pub fn save_to(cfg: &Config, path: &Path) -> Result<()> {
     let toml_str = toml::to_string_pretty(cfg).context("serialize config")?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, toml_str).context("write tmp")?;
-    // chmod 0600 on unix
+    // Restrict the on-disk config (which may carry the router `api_token`) to
+    // owner-only access. The 0600 chmod is unix-only: on Windows the
+    // `#[cfg(unix)]` gate skips it and we instead rely on the OS file ACLs /
+    // the fact that the file lives under the user's profile directory. There is
+    // no portable equivalent of 0600 in the standard library, so Windows
+    // hardening is delegated to the filesystem ACLs set by the OS.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -198,6 +203,18 @@ pub fn save_to(cfg: &Config, path: &Path) -> Result<()> {
         let _ = std::fs::set_permissions(path, perm);
     }
     Ok(())
+}
+
+/// Generate a secure router API key: `xr_` + 32 hex chars (16 random bytes).
+///
+/// This is the single canonical implementation; the wizard and CLI historically
+/// carried duplicate copies, but new code should call this instead of
+/// re-implementing the format.
+pub fn gen_router_key() -> String {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let n: u128 = rng.random();
+    format!("xr_{:032x}", n)
 }
 
 #[cfg(test)]

@@ -29,6 +29,7 @@
 use xrouter_config::Config;
 use xrouter_core::{EndpointId, ModelEntry, Tier};
 use xrouter_providers::ModelCache;
+use tracing::debug;
 
 /// A resolved routing target.
 #[derive(Debug)]
@@ -146,6 +147,14 @@ fn collect_bare_candidates(
             if !pcfg.enabled {
                 continue;
             }
+            // `get_or_stale` returns the cached list even if it has expired (TTL
+            // passed). We keep serving it for availability, but log so operators
+            // can see we're routing on stale model metadata. A proper async
+            // refresh (background `refresh_model_cache`) is the long-term fix;
+            // this call stays blocking to keep resolution allocation-free.
+            if !cache.is_fresh(prov) {
+                debug!(provider = prov, "serving stale model cache for resolution");
+            }
             if let Some(models) = cache.get_or_stale(prov) {
                 for m in models {
                     if m.id == model {
@@ -176,17 +185,29 @@ fn pick(candidates: Vec<(String, String)>) -> Result<ResolvedTarget, ResolutionE
     }
 }
 
-/// Strip a trailing `:free` or `-free` suffix (case-sensitive on the suffix
-/// only; the prefix keeps its original casing). Returns the input unchanged if
-/// no free suffix is present.
+/// Strip a free-model marker from `model`, mirroring the patterns recognized by
+/// `xrouter_core::is_free` (case-insensitive). A cached id stored *without* the
+/// marker still resolves when the user sends it *with* the marker, and
+/// vice-versa.
+///
+/// Markers handled (longest/most-specific first so e.g. `-free-` is preferred
+/// over `-free`): `[free]-`, `(free)-`, `-free-`, `:free`, `-free`, `[free]`,
+/// `(free)`. The first marker found (case-insensitively) is removed; if none is
+/// present the input is returned unchanged.
 fn strip_free_suffix(model: &str) -> String {
-    if model.ends_with(":free") {
-        model[..model.len() - ":free".len()].to_string()
-    } else if model.ends_with("-free") {
-        model[..model.len() - "-free".len()].to_string()
-    } else {
-        model.to_string()
+    // Keep this list in sync with `xrouter_core::is_free`.
+    let markers = [":free", "-free-", "[free]-", "(free)-", "-free", "[free]", "(free)"];
+    let lower = model.to_lowercase();
+    for m in markers {
+        if let Some(pos) = lower.find(m) {
+            let mut s = model.to_string();
+            // Remove the marker at the located position (length is ASCII-stable
+            // because the marker is ASCII and the match is case-insensitive).
+            s.replace_range(pos..pos + m.len(), "");
+            return s;
+        }
     }
+    model.to_string()
 }
 
 #[cfg(test)]
@@ -194,6 +215,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use xrouter_config::{Config, ProviderConfig, Settings};
+    use xrouter_core::is_free;
     use xrouter_providers::ModelCache;
 
     fn cfg_with_tiers(tiers: Vec<Tier>) -> Config {
@@ -444,6 +466,30 @@ mod tests {
         match resolve_model(&cfg, "shared-model", Some(&cache)) {
             Err(ResolutionError::Ambiguous(opts)) => assert_eq!(opts.len(), 2),
             other => panic!("expected ambiguous, got {:?}", other),
+        }
+    }
+
+    /// `strip_free_suffix` must invert `is_free`: every id `is_free` recognizes
+    /// strips down to a non-free id, and non-free ids are left untouched.
+    #[test]
+    fn free_strip_inverts_is_free() {
+        let free = [
+            "mimo-v2.5-free",
+            "deepseek/deepseek-r1:free",
+            "qwen3-coder-[free]",
+            "some-model(free)",
+            "model-[free]-v2",
+            "MODEL-FREE",
+        ];
+        for f in free {
+            let stripped = strip_free_suffix(f);
+            assert!(is_free(f), "precondition: {} should be free", f);
+            assert!(!is_free(&stripped), "strip({}) = '{}' should NOT be free", f, stripped);
+        }
+        // Non-free ids must pass through unchanged.
+        for nf in ["gpt-4", "claude-sonnet-4", "freewheel", "cohere/north-mini-code"] {
+            assert!(!is_free(nf));
+            assert_eq!(strip_free_suffix(nf), nf, "non-free id {} must be unchanged", nf);
         }
     }
 }

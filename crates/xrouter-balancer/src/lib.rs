@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use dashmap::DashMap;
+use rand::RngExt;
 use xrouter_core::ApiKey;
 use xrouter_core::tier::ModelEntry;
 
@@ -91,14 +93,35 @@ impl HealthRegistry {
         }
     }
 
-    pub fn is_healthy(&self, id: &EndpointId) -> bool {
-        if let Some(h) = self.map.get(id) {
-            match h.state {
-                HealthState::Healthy => true,
-                HealthState::HalfOpen => true, // allow probe
-                HealthState::Cooling { until, .. } => Instant::now() >= until,
+    /// Single-pass health read for one endpoint. Also transitions an expired
+    /// `Cooling` endpoint into `HalfOpen` (so idle tiers recover without an
+    /// external probe) and decrements the provider's cooling counter. This makes
+    /// `is_healthy` self-healing: any health read advances the state machine.
+    pub fn health_state(&self, id: &EndpointId) -> HealthState {
+        if let Some(mut h) = self.map.get_mut(id) {
+            if let HealthState::Cooling { until, .. } = h.state {
+                if Instant::now() >= until {
+                    h.state = HealthState::HalfOpen;
+                    drop(h);
+                    dec_counter(&self.cooling_counts, id.provider());
+                    return HealthState::HalfOpen;
+                }
+            } else {
+                return h.state;
             }
-        } else { true }
+        }
+        // Not present, or was still Cooling (no transition): read current state.
+        self.map
+            .get(id)
+            .map(|h| h.state)
+            .unwrap_or(HealthState::Healthy)
+    }
+
+    /// `is_healthy` auto-advances the cooling->half-open state machine (see
+    /// `health_state`), so callers never need a separate background probe task
+    /// to recover idle tiers.
+    pub fn is_healthy(&self, id: &EndpointId) -> bool {
+        matches!(self.health_state(id), HealthState::Healthy | HealthState::HalfOpen)
     }
 
     pub fn is_half_open(&self, id: &EndpointId) -> bool {
@@ -133,6 +156,11 @@ impl HealthRegistry {
                 let exp = (entry.consecutive_failures.saturating_sub(3)).min(4) as u32;
                 Duration::from_secs(30 * 2u64.pow(exp))
             };
+            // Jitter the cooling window by ±10–20% so a fleet of endpoints that
+            // fail together don't all re-probe in lockstep (avoids thundering
+            // herd on recovery). Multiplier in [0.9, 1.2).
+            let jitter = rand::rng().random_range(0.9..1.2);
+            let backoff = backoff.mul_f64(jitter);
             let capped = std::cmp::min(backoff, Duration::from_secs(300));
             entry.state = HealthState::Cooling { until: Instant::now() + capped, failures: entry.consecutive_failures };
         }
@@ -166,6 +194,17 @@ impl HealthRegistry {
 
     pub fn snapshot(&self) -> Vec<(EndpointId, EndpointHealth)> {
         self.map.iter().map(|e| (e.key().clone(), e.value().clone())).collect()
+    }
+
+    /// Snapshot the health state of a batch of endpoints in a single pass (one
+    /// DashMap lock per id, with the cooling->half-open transition folded in).
+    /// Used by `candidates_ordered` so a 40-entry tier does not take 80+ locks.
+    pub fn snapshot_states(&self, ids: &[EndpointId]) -> HashMap<EndpointId, HealthState> {
+        let mut out = HashMap::with_capacity(ids.len());
+        for id in ids {
+            out.insert(id.clone(), self.health_state(id));
+        }
+        out
     }
 
     /// Transition cooling -> half-open if timer expired
@@ -210,6 +249,16 @@ impl Default for HealthRegistry {
     fn default() -> Self { Self::new() }
 }
 
+// Per-tier smooth-WRR state, keyed by `EndpointId` (not by candidate position)
+// so that reordering of `candidates_ordered` output does not misalign weights.
+struct WrrState {
+    // Number of candidates the last time we (re)built the weight map. Used to
+    // detect topology changes and reset stale weights.
+    len: usize,
+    // Current (smooth) weight per endpoint id.
+    weights: HashMap<EndpointId, i64>,
+}
+
 // Balancer combines KeyRing per provider + health
 pub struct Balancer {
     pub keyrings: DashMap<String, KeyRing>,
@@ -217,8 +266,9 @@ pub struct Balancer {
     // Quota-banned keys: "provider:key" -> ban expiry. A key banned for quota
     // is skipped by `next_key` until its ban expires (auto-cleared on access).
     banned_keys: DashMap<String, Instant>,
-    // Per-tier smooth-WRR current-weight state (indexed by tier name).
-    wrr: DashMap<String, Vec<i64>>,
+    // Per-tier smooth-WRR current-weight state (indexed by tier name, then by
+    // `EndpointId` so reordering candidates never misaligns weights).
+    wrr: DashMap<String, WrrState>,
 }
 
 impl Balancer {
@@ -262,20 +312,30 @@ impl Balancer {
 
     pub fn next_key(&self, provider: &str) -> Option<(ApiKey, usize)> {
         let ring = self.keyrings.get(provider)?;
-        // try to find a usable key, loop at most len times
-        for _ in 0..ring.len() {
-            if let Some((k, idx)) = ring.next() {
-                // skip dead keys and quota-banned keys
-                if self.health.is_key_dead(k.expose()) {
-                    continue;
-                }
-                if self.is_key_banned(provider, k.expose()) {
-                    continue;
-                }
-                return Some((k.clone(), idx));
-            } else { break; }
+        let len = ring.len();
+        if len == 0 {
+            return None;
         }
-        // if all dead/banned, return none
+        // Peek-then-advance: we only advance the cursor when we actually return a
+        // key. This preserves round-robin fairness among *healthy* keys and,
+        // crucially, avoids cursor drift when every key is dead/banned (the old
+        // code advanced the cursor on every skipped key, starving fairness and
+        // walking the cursor far ahead on fully-dead providers).
+        let start = ring.cursor.load(Ordering::Relaxed);
+        for step in 0..len {
+            let idx = (start + step) % len;
+            let k = &ring.keys[idx];
+            if self.health.is_key_dead(k.expose()) {
+                continue;
+            }
+            if self.is_key_banned(provider, k.expose()) {
+                continue;
+            }
+            // Claim this slot so the next call continues after it.
+            ring.cursor.store((start + step + 1) % len, Ordering::Relaxed);
+            return Some((k.clone(), idx));
+        }
+        // All keys dead/banned: leave the cursor untouched (no drift).
         None
     }
 
@@ -285,15 +345,20 @@ impl Balancer {
     }
 
     pub fn candidates_ordered<'a>(&self, tier: &'a xrouter_core::Tier) -> Vec<&'a ModelEntry> {
-        // Provider degraded check: if provider degraded, deprioritize its entries but keep within tier
+        // Snapshot health once per tier (single pass, one lock per endpoint) so a
+        // large tier doesn't take 40+ DashMap locks on the hot path.
+        let ids: Vec<EndpointId> = tier.entries.iter().map(|e| e.endpoint_id.clone()).collect();
+        let states = self.health.snapshot_states(&ids);
+        // Provider degraded check: if provider degraded, deprioritize its entries but keep within tier.
+        // `strict` tiers honor provider-degradation signals; non-strict tiers treat all entries equally.
+        let honor_degradation = tier.strict;
         let mut healthy: Vec<(usize, &ModelEntry)> = Vec::new();
         let mut degraded: Vec<(usize, &ModelEntry)> = Vec::new();
         let mut unhealthy: Vec<(usize, &ModelEntry)> = Vec::new();
         for (i, e) in tier.entries.iter().enumerate() {
-            let id = &e.endpoint_id;
-            self.health.maybe_half_open(id);
-            let is_healthy = self.health.is_healthy(id);
-            let is_degraded_provider = self.health.is_provider_degraded(&e.provider);
+            let st = states.get(&e.endpoint_id).copied().unwrap_or(HealthState::Healthy);
+            let is_healthy = matches!(st, HealthState::Healthy | HealthState::HalfOpen);
+            let is_degraded_provider = honor_degradation && self.health.is_provider_degraded(&e.provider);
             if is_healthy && !is_degraded_provider {
                 healthy.push((i, e));
             } else if is_healthy && is_degraded_provider {
@@ -319,8 +384,10 @@ impl Balancer {
     }
 
     /// Smooth weighted round-robin (Nginx-style) selection among the tier's
-    /// candidates. State is kept per tier in `self.wrr` so the distribution
-    /// respects each entry's `weight` across successive calls.
+    /// candidates. State is kept per tier in `self.wrr`, keyed by `EndpointId`
+    /// (not candidate position) so that reordering of `candidates_ordered`
+    /// output never misaligns weights. The stored weight map is reset when the
+    /// candidate count changes (topology change).
     pub fn pick_weighted<'a>(&self, tier: &'a xrouter_core::Tier) -> Option<&'a ModelEntry> {
         let candidates = self.candidates_ordered(tier);
         if candidates.is_empty() { return None; }
@@ -329,17 +396,25 @@ impl Balancer {
         if all_one { return Some(candidates[0]); }
         let key = tier.name.clone();
         let total: u32 = candidates.iter().map(|c| c.weight).sum();
-        let mut state = self.wrr.entry(key).or_insert_with(|| vec![0i64; candidates.len()]);
-        if state.len() != candidates.len() {
-            *state = vec![0i64; candidates.len()];
+        let mut state = self.wrr.entry(key).or_insert_with(|| WrrState {
+            len: candidates.len(),
+            weights: HashMap::new(),
+        });
+        // Topology changed (candidate count differs) → reset weights.
+        if state.len != candidates.len() {
+            state.len = candidates.len();
+            state.weights.clear();
         }
         let mut best = 0usize;
         let mut best_val = i64::MIN;
         for (i, c) in candidates.iter().enumerate() {
-            state[i] += c.weight as i64;
-            if state[i] > best_val { best_val = state[i]; best = i; }
+            let cur = state.weights.entry(c.endpoint_id.clone()).or_insert(0);
+            *cur += c.weight as i64;
+            if *cur > best_val { best_val = *cur; best = i; }
         }
-        state[best] -= total as i64;
+        if let Some(cur) = state.weights.get_mut(&candidates[best].endpoint_id) {
+            *cur -= total as i64;
+        }
         Some(candidates[best])
     }
 }

@@ -9,3 +9,4 @@ dashmap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+rand = { workspace = true }

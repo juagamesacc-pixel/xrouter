@@ -72,7 +72,10 @@ impl Provider for OpenAiCompatAdapter {
             .send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let txt = resp.text().await.unwrap_or_default();
+            let txt = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("(failed to read error body: {e})"));
             anyhow::bail!("list_models {}: {}", status, txt);
         }
         let v: serde_json::Value = resp.json().await?;
@@ -106,11 +109,16 @@ impl Provider for OpenAiCompatAdapter {
 
     async fn send(&self, ctx: &RequestCtx) -> anyhow::Result<UpstreamResponse> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let resp = self.client.post(&url)
+        let mut req = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", ctx.api_key.expose()))
             .header("Content-Type", "application/json")
-            .json(&ctx.body)
-            .send().await?;
+            .json(&ctx.body);
+        // Signal SSE support when the caller wants a streamed response so
+        // upstreams return `text/event-stream` instead of buffering.
+        if ctx.stream {
+            req = req.header("Accept", "text/event-stream");
+        }
+        let resp = req.send().await?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         let is_stream = ctx.stream;
@@ -196,7 +204,10 @@ impl Provider for DeviceProvider {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let txt = resp.text().await.unwrap_or_default();
+            let txt = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("(failed to read error body: {e})"));
             anyhow::bail!("list_models {}: {}", status, txt);
         }
         let v: serde_json::Value = resp.json().await?;

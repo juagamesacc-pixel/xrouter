@@ -116,7 +116,12 @@ async function load(){
   }catch{}
 }
 document.getElementById('refreshBtn').addEventListener('click',load);
-load();setInterval(load,5000);
+let metricsTimer=null;
+function startPolling(){ if(metricsTimer)return; metricsTimer=setInterval(load,5000); }
+function stopPolling(){ if(metricsTimer){clearInterval(metricsTimer);metricsTimer=null;} }
+document.addEventListener('visibilitychange',()=>{ if(document.hidden){ stopPolling(); } else { load(); startPolling(); } });
+load();
+if(!document.hidden)startPolling();
 </script>
 </body>
 </html>

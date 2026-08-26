@@ -27,6 +27,14 @@ use futures::Stream;
 use std::pin::Pin;
 use serde_json::{Value, json};
 use tracing::{info, warn};
+use rand::RngExt;
+
+/// Default upstream timeout for image-generation requests (seconds). Image
+/// generation is far slower than chat-completion TTFB, so it gets a generous
+/// default distinct from the 15s chat timeout. A per-provider override would
+/// naturally live on `ProviderConfig` (e.g. `image_timeout_secs`); that struct
+/// is owned by `xrouter-config`, so we keep a documented constant here for now.
+const IMAGE_GEN_TIMEOUT_SECS: u64 = 120;
 
 use arc_swap::ArcSwap;
 use metrics::{Metrics, SharedMetrics};
@@ -71,7 +79,8 @@ impl AppState {
             .tcp_nodelay(true)
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(32)
-            .build().unwrap();
+            .build()
+            .expect("failed to build reqwest client (check TLS/proxy configuration)");
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(cfg))),
             balancer,
@@ -124,11 +133,17 @@ impl AppState {
             if is_device_kind(&pcfg.kind) {
                 // Device providers: use a (refreshed) device account token.
                 if let Some(store) = self.device_store.load_full() {
-                    let mut s = store.lock().await;
                     let name = device_provider_name(&pcfg.kind);
-                    if let Some(mut acct) = s.next_account(name) {
+                    let acct_opt = { let mut s = store.lock().await; s.next_account(name) };
+                    if let Some(mut acct) = acct_opt {
                         if let Err(e) = xrouter_auth::refresh_if_needed(&mut acct).await {
                             warn!("device token refresh failed for {}: {}", name, e);
+                        }
+                        // Persist refreshed token back without holding lock across network
+                        if let Some(store2) = self.device_store.load_full() {
+                            let mut s2 = store2.lock().await;
+                            s2.add_account(acct.clone());
+                            let _ = s2.save();
                         }
                         let key = xrouter_core::ApiKey(acct.access_token.clone());
                         let adapter = make_provider(&pcfg.kind, pcfg.base_url.clone(), self.client.clone());
@@ -323,6 +338,15 @@ async fn handle_models(State(state): State<AppState>) -> impl IntoResponse {
 struct ModelsQuery { provider: Option<String>, free: Option<bool>, #[serde(default, rename = "type")] type_: Option<String> }
 
 /// Heuristic: does a model id look like an image-generation model?
+///
+/// This is a name-based heuristic (substring match on known image-model
+/// families). It is intentionally cheap and stateless. A more accurate
+/// alternative is a provider-capability flag: e.g. a `supports_images` field on
+/// `ProviderConfig` (or per-`ModelEntry` capability metadata populated from each
+/// provider's `/models` response), which would let routing consult declared
+/// capabilities instead of guessing from the id. That requires extending the
+/// config/provider schemas (owned by `xrouter-config`/`xrouter-providers`), so
+/// for now we keep the heuristic and document the upgrade path.
 pub fn is_image_model(id: &str) -> bool {
     let n = id.to_lowercase();
     n.contains("flux")
@@ -672,15 +696,40 @@ fn body_is_quota(body: &str) -> bool {
 /// Returns `Some(response)` when authentication fails.
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     let cfg = state.get_config();
-    if let Some(token) = cfg.settings.api_token.clone() {
-        if !token.is_empty() {
-            let auth = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
-            if auth != format!("Bearer {}", token) {
-                return Some((StatusCode::UNAUTHORIZED, Json(json!({"error":{"type":"authentication_error","message":"invalid token"}}))).into_response());
-            }
-        }
+    // If no API token is configured (or it is empty), auth is disabled.
+    let expected = match &cfg.settings.api_token {
+        Some(t) if !t.is_empty() => t,
+        _ => return None,
+    };
+    // Extract the bearer credential robustly:
+    //  - take the *first* Authorization header (ignore any duplicates),
+    //  - tolerate non-UTF8 by treating it as an empty/invalid value,
+    //  - trim surrounding whitespace and strip a case-insensitive `Bearer `
+    //    prefix (allowing extra spaces, e.g. `Bearer  <token>`).
+    let raw = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let trimmed = raw.trim();
+    let supplied = trimmed
+        .strip_prefix("Bearer ")
+        .or_else(|| trimmed.strip_prefix("bearer "))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    // Constant-time comparison so timing does not leak the token's length or
+    // value. `subtle::ConstantTimeEq::ct_eq` returns true only when the two
+    // slices are equal in both content and length, in constant time.
+    if subtle::ConstantTimeEq::ct_eq(supplied.as_bytes(), expected.as_bytes()).into() {
+        None
+    } else {
+        Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":{"type":"authentication_error","message":"invalid token"}})),
+            )
+                .into_response(),
+        )
     }
-    None
 }
 
 async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap, is_anthropic_ingress: bool, is_responses_ingress: bool) -> Response {
@@ -778,7 +827,7 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
     let keys_per_provider = candidates.iter().map(|e| {
         device_counts.get(&e.provider).copied().unwrap_or_else(|| state.balancer.keys_len(&e.provider))
     }).max().unwrap_or(1).max(1);
-    let max_attempts = std::cmp::min(candidates.len() * keys_per_provider, 6).max(1);
+    let max_attempts = (candidates.len() * keys_per_provider).max(1);
     let mut last_error: Option<(u16, String)> = None;
     let mut last_provider: String = String::new();
     let mut last_model: String = String::new();
@@ -867,8 +916,21 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
             stream: streaming,
         };
 
-        // panic isolation around adapter creation/send
-        let adapter: Box<dyn xrouter_providers::Provider> = xrouter_providers::make_provider(&pcfg.kind, pcfg.base_url.clone(), state.client.clone());
+        // panic isolation around adapter construction (make_provider is pure, but
+        // guard against any future panic so one bad provider kind can't take down
+        // the request loop).
+        let adapter = match catch_unwind(AssertUnwindSafe(|| {
+            xrouter_providers::make_provider(&pcfg.kind, pcfg.base_url.clone(), state.client.clone())
+        })) {
+            Ok(a) => a,
+            Err(_) => {
+                last_error = Some((502, "provider adapter construction panicked".to_string()));
+                state.metrics.inc_error();
+                attempt += 1;
+                if attempt >= max_attempts { break; }
+                continue;
+            }
+        };
 
         // per-attempt timeout: connect 3s via client, TTFB 15s, total handled via timeout
         let fut = adapter.send(&ctx);
@@ -1032,8 +1094,8 @@ async fn route_openai_request(state: &AppState, body: Value, headers: HeaderMap,
             state.metrics.inc_retries();
             attempt += 1;
             if attempt >= max_attempts { break; }
-            // jitter 0-25ms
-            let jitter = (attempt as u64 * 5) % 25;
+            // jitter 0-25ms (randomized to avoid synchronized retries across workers)
+            let jitter = rand::rng().random_range(0..=25);
             tokio::time::sleep(Duration::from_millis(jitter)).await;
             continue;
         } else {
@@ -1087,6 +1149,48 @@ fn build_sse_headers() -> HeaderMap {
     h
 }
 
+/// Shared SSE line buffer. Accumulates chunk bytes and yields complete
+/// newline-terminated lines (stripping a trailing `\r`), preserving any partial
+/// line across calls. Used by both `StreamTranslator` and
+/// `ResponsesStreamTranslator` so line-splitting logic lives in exactly one
+/// place instead of being duplicated.
+struct SseLineBuffer {
+    buf: String,
+}
+
+impl SseLineBuffer {
+    fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    /// Push a chunk; return the complete lines extracted so far (without their
+    /// trailing newline). Any partial line remains buffered for the next call.
+    fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.buf.push_str(&String::from_utf8_lossy(chunk));
+        let mut lines = Vec::new();
+        while let Some(pos) = self.buf.find('\n') {
+            let mut line = self.buf[..pos].to_string();
+            self.buf.drain(..=pos);
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            lines.push(line);
+        }
+        lines
+    }
+
+    /// Flush any remaining buffered data as a final line (if non-empty).
+    fn flush(&mut self) -> Option<String> {
+        if self.buf.is_empty() {
+            None
+        } else {
+            let line = self.buf.clone();
+            self.buf.clear();
+            Some(line)
+        }
+    }
+}
+
 /// Stateful, chunk-wise SSE translator. Buffers partial lines across network
 /// chunks and carries per-stream translation state (tool-call blocks, message
 /// start, finish reason) so cross-protocol streaming never loses data.
@@ -1094,7 +1198,7 @@ struct StreamTranslator {
     upstream_is_openai: bool,
     ingress_is_anthropic: bool,
     pending_event: Option<String>,
-    line_buf: String,
+    line_buf: SseLineBuffer,
     oa_state: translate::OaToAnthStreamState,
     anth_state: translate::AnthToOaStreamState,
 }
@@ -1105,20 +1209,15 @@ impl StreamTranslator {
             upstream_is_openai,
             ingress_is_anthropic,
             pending_event: None,
-            line_buf: String::new(),
+            line_buf: SseLineBuffer::new(),
             oa_state: Default::default(),
             anth_state: Default::default(),
         }
     }
 
     fn push(&mut self, chunk: &[u8]) -> String {
-        let text = String::from_utf8_lossy(chunk);
-        self.line_buf.push_str(&text);
         let mut out = String::new();
-        while let Some(pos) = self.line_buf.find('\n') {
-            let mut line = self.line_buf[..pos].to_string();
-            self.line_buf.drain(..=pos);
-            if line.ends_with('\r') { line.pop(); }
+        for line in self.line_buf.push(chunk) {
             self.process_line(&line, &mut out);
         }
         out
@@ -1126,9 +1225,7 @@ impl StreamTranslator {
 
     fn flush(&mut self) -> String {
         let mut out = String::new();
-        if !self.line_buf.is_empty() {
-            let line = self.line_buf.clone();
-            self.line_buf.clear();
+        if let Some(line) = self.line_buf.flush() {
             self.process_line(&line, &mut out);
         }
         // Ensure a clean terminal event if the upstream closed without one.
@@ -1203,7 +1300,7 @@ struct ResponsesStreamTranslator {
     text: String,
     usage_in: u64,
     usage_out: u64,
-    line_buf: String,
+    line_buf: SseLineBuffer,
 }
 
 impl ResponsesStreamTranslator {
@@ -1216,7 +1313,7 @@ impl ResponsesStreamTranslator {
             text: String::new(),
             usage_in: 0,
             usage_out: 0,
-            line_buf: String::new(),
+            line_buf: SseLineBuffer::new(),
         }
     }
 
@@ -1229,12 +1326,7 @@ impl ResponsesStreamTranslator {
                 out.push_str(&format!("event: response.created\ndata: {}\n\n", s));
             }
         }
-        let text = String::from_utf8_lossy(chunk);
-        self.line_buf.push_str(&text);
-        while let Some(pos) = self.line_buf.find('\n') {
-            let mut line = self.line_buf[..pos].to_string();
-            self.line_buf.drain(..=pos);
-            if line.ends_with('\r') { line.pop(); }
+        for line in self.line_buf.push(chunk) {
             if line.starts_with("data: ") {
                 let data = line.trim_start_matches("data: ").trim();
                 if data == "[DONE]" { continue; }
@@ -1274,9 +1366,7 @@ impl ResponsesStreamTranslator {
 
     fn flush(&mut self) -> String {
         let mut out = String::new();
-        if !self.line_buf.is_empty() {
-            let line = self.line_buf.clone();
-            self.line_buf.clear();
+        if let Some(line) = self.line_buf.flush() {
             if line.starts_with("data: ") {
                 let data = line.trim_start_matches("data: ").trim();
                 if data != "[DONE]" {
@@ -1507,7 +1597,7 @@ async fn handle_images_generations(State(state): State<AppState>, headers: Heade
     let keys_per_provider = candidates.iter().map(|e| {
         device_counts.get(&e.provider).copied().unwrap_or_else(|| state.balancer.keys_len(&e.provider))
     }).max().unwrap_or(1).max(1);
-    let max_attempts = std::cmp::min(candidates.len() * keys_per_provider, 6).max(1);
+    let max_attempts = (candidates.len() * keys_per_provider).max(1);
     let mut last_error: Option<(u16, String)> = None;
     let mut last_provider: String = String::new();
     let mut last_model: String = String::new();
@@ -1580,7 +1670,7 @@ async fn handle_images_generations(State(state): State<AppState>, headers: Heade
 
         let adapter: Box<dyn xrouter_providers::Provider> = xrouter_providers::make_provider(&pcfg.kind, pcfg.base_url.clone(), state.client.clone());
 
-        let res = tokio::time::timeout(Duration::from_secs(15), adapter.send_images(&ctx)).await;
+        let res = tokio::time::timeout(Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS), adapter.send_images(&ctx)).await;
         let upstream = match res {
             Ok(Ok(u)) => u,
             Ok(Err(e)) => {

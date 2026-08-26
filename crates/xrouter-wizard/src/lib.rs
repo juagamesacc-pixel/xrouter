@@ -54,10 +54,14 @@ mod tests {
         // modal) added the router auth UI, raising it again to 72 KB. The
         // central Keys tab (combined per-provider key list with reveal / copy /
         // regenerate / delete, all persisting via the verified POST /api/config
-        // flow) raised it to 78 KB.
+        // flow) raised it to 78 KB. The wizard UX lane added optimistic key-add
+        // (payload built without mutating S), a dirty-check before remote
+        // sync, a central provider-select "Add key" button, 50-per-page model
+        // pagination, and server-side key rotation on model fetch, raising it
+        // to 80 KB.
         assert!(
-            WIZARD_HTML_LEN < 78_000,
-            "wizard.html is {} bytes, exceeds 78 KB budget",
+            WIZARD_HTML_LEN < 80_000,
+            "wizard.html is {} bytes, exceeds 80 KB budget",
             WIZARD_HTML_LEN
         );
     }

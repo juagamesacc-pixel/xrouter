@@ -293,6 +293,10 @@ input::placeholder{color:var(--fg3)}
             <div class="count" id="modelCount"></div>
             <button class="btn btn-secondary btn-sm" id="selectAllBtn">Select all</button>
           </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px" id="modelPager">
+            <button class="btn btn-secondary btn-sm" id="modelPrevBtn">‹ Prev</button>
+            <button class="btn btn-secondary btn-sm" id="modelNextBtn">Next ›</button>
+          </div>
           <div class="model-list" id="modelList"></div>
           <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
             <input type="text" id="customModelInput" placeholder="Or add a custom model ID manually…" style="flex:1">
@@ -363,21 +367,21 @@ input::placeholder{color:var(--fg3)}
 <div class="toast" id="toast"></div>
 
 <script>
-const S={providers:{},tiers:[],selectedProvider:null,modelCache:{},selectedModels:new Set(),customModels:[],metricsData:null,freeOnly:true,api_token:null};
+const S={providers:{},tiers:[],selectedProvider:null,modelCache:{},selectedModels:new Set(),customModels:[],metricsData:null,freeOnly:true,api_token:null,_dirty:false};
 const BUILTINS={'opencode-zen':{kind:'openai-compat',base_url:'https://opencode.ai/zen/v1',keys:[],ban_duration:300,enabled:true},'openrouter':{kind:'openai-compat',base_url:'https://openrouter.ai/api/v1',keys:[],ban_duration:300,enabled:true},'together-image':{kind:'openai-compat',base_url:'https://api.together.ai/v1',keys:[],ban_duration:300,enabled:true}};
 const EYE_OPEN=`<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_CLOSED=`<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
-let customKindValue='openai-compat',deviceProviderValue='kiro',fetchProviderValue='',fetchTypeValue='text',openDropdownId=null;
+let customKindValue='openai-compat',deviceProviderValue='kiro',fetchProviderValue='',fetchTypeValue='text',openDropdownId=null,modelPage=0,centralAddProviderValue='';
 
  document.addEventListener('DOMContentLoaded',async()=>{await loadState();renderProviders();renderTiers();renderSavedModels();renderKeysCentral();initTabs();initFetchModels();initModelSubTabs();initTierEditor();initMetrics();initDeviceLogin();initRouterAccess();updateSteps();setupSync()});
 function applyServerConfig(d){if(d.providers)for(const[k,v]of Object.entries(d.providers)){S.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],ban_duration:v.quota_ban_secs||300}};if(d.tiers)S.tiers=d.tiers.map(t=>({name:t.name,entries:(t.entries||[]).map(e=>({provider:e.provider,model:e.model,is_default:!!e.is_default,weight:e.weight||1,endpoint_id:e.endpoint_id||''}))}));if(d.settings){if(d.settings.default_tier)S.default_tier=d.settings.default_tier;S.api_token=(d.settings.api_token&&d.settings.api_token.length)?d.settings.api_token:null}}
 async function loadState(){try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();applyServerConfig(d)}}catch(e){}for(const[k,v]of Object.entries(BUILTINS))if(!S.providers[k])S.providers[k]={...v}}
 function buildServerPayload(){const payload={settings:{default_tier:S.default_tier||null,api_token:S.api_token||null},providers:{},tiers:S.tiers};for(const[k,v]of Object.entries(S.providers))payload.providers[k]={kind:v.kind,base_url:v.base_url,enabled:v.enabled!==false,keys:Array.isArray(v.keys)?v.keys:[],quota_ban_secs:v.ban_duration||300};return payload}
-async function persist(){
+async function persist(payloadOverride){
   let res={ok:false,error:'unknown error'};
   let gotServerResponse=false;
   try{
-    const payload=buildServerPayload();
+    const payload=payloadOverride||buildServerPayload();
     const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!r.ok){
       let msg='Failed to save configuration (HTTP '+r.status+')';
@@ -414,6 +418,7 @@ async function persist(){
   }
   // On success, re-sync from the (now verified) server state.
   if(res.ok){
+    S._dirty=false;
     try{syncChannel&&syncChannel.postMessage('reload')}catch(e){}
     try{localStorage.setItem('wizard_sync',Date.now().toString())}catch(e){}
     syncFromServer();
@@ -440,10 +445,19 @@ function verifySaved(sent,saved){
   if(sentNames!==savedNames) return 'tier names mismatch after save';
   return null;
 }
-function saveState(){persist();try{localStorage.setItem('xrouter_wizard',JSON.stringify({providers:S.providers,tiers:S.tiers,metricsData:S.metricsData}))}catch(e){}}
+function saveState(){S._dirty=true;persist();try{localStorage.setItem('xrouter_wizard',JSON.stringify({providers:S.providers,tiers:S.tiers,metricsData:S.metricsData}))}catch(e){}}
 let syncChannel=null;
 function setupSync(){try{syncChannel=new BroadcastChannel('wizard-sync');syncChannel.onmessage=e=>{if(e.data==='reload')syncFromServer()}}catch(e){}window.addEventListener('storage',e=>{if(e.key==='wizard_sync')syncFromServer()});window.addEventListener('focus',()=>syncFromServer())}
-async function syncFromServer(){try{const r=await fetch('/api/config');if(!r.ok)return;const d=await r.json();applyServerConfig(d);renderAll();loadAuthStatus()}catch(e){}}
+async function syncFromServer(){
+  try{
+    const r=await fetch('/api/config');if(!r.ok)return;const d=await r.json();
+    if(S._dirty){
+      const takeTheirs=await openDialog({type:'confirm',title:'Remote changes detected',msg:'You have unsaved local edits and the server config changed elsewhere.<br><br>Choose <strong>Take theirs</strong> to load the server config, or <strong>Keep mine</strong> to keep your edits.',confirmText:'Take theirs',cancelText:'Keep mine'});
+      if(!takeTheirs){S._dirty=false;return}
+    }
+    applyServerConfig(d);S._dirty=false;renderAll();loadAuthStatus();
+  }catch(e){}
+}
 function renderAll(){renderProviders();renderTiers();renderSavedModels();renderKeysCentral();populateFetchSelect();updateSteps();initDeviceLogin();loadAuthStatus()}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function toast(msg,err){const el=document.getElementById('toast');el.textContent=(err?'✕ ':'✔ ')+msg;el.className='toast show'+(err?' error':'');setTimeout(()=>el.classList.remove('show'),3000)}
@@ -555,19 +569,31 @@ r.querySelector('.btn-danger').addEventListener('click',()=>{S.providers[S.selec
 l.appendChild(r)});
 document.getElementById('keyCount').textContent=keys.length?keys.length+' key'+(keys.length>1?'s':'')+' · round-robin enabled':'No keys added yet'}
 
-document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(k){const pid=S.selectedProvider;S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){const i=S.providers[pid].keys.length-1;if(i>=0)S.providers[pid].keys.splice(i,1);renderKeys(S.providers[pid].keys);showModal('Could not save key',r.error);return}renderKeys(S.providers[pid].keys);toast('Key added ✓ (verified)')}});
-document.getElementById('saveConfig').addEventListener('click',async()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;const r=await persist();if(!r.ok){showModal('Could not save provider',r.error);return}toast('Provider saved ✓ (verified)');updateSteps()});
+async function persistAddKey(pid,key){
+  const payload=buildServerPayload();
+  payload.providers[pid].keys=payload.providers[pid].keys.concat([key]);
+  return await persist(payload);
+}
+document.getElementById('addKeyBtn').addEventListener('click',async()=>{if(!S.selectedProvider)return;const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(S.selectedProvider)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k)return;const pid=S.selectedProvider;const r=await persistAddKey(pid,k);if(!r.ok){showModal('Could not save key',r.error);return}renderKeys(S.providers[pid].keys);renderProviders();toast('Key added ✓ (verified)')}});
+document.getElementById('saveConfig').addEventListener('click',async()=>{if(!S.selectedProvider)return;const p=S.providers[S.selectedProvider];S._dirty=true;p.base_url=document.getElementById('baseUrl').value.trim();p.ban_duration=parseInt(document.getElementById('banDuration').value)||300;const r=await persist();if(!r.ok){showModal('Could not save provider',r.error);return}toast('Provider saved ✓ (verified)');updateSteps()});
 document.getElementById('cancelConfig').addEventListener('click',()=>{document.getElementById('providerConfig').style.display='none';S.selectedProvider=null;renderProviders()});
 document.getElementById('cancelCustom').addEventListener('click',()=>{document.getElementById('customProviderForm').style.display='none'});
 document.getElementById('saveCustom').addEventListener('click',()=>{const id=document.getElementById('customId').value.trim(),url=document.getElementById('customUrl').value.trim(),kind=customKindValue;
-if(!id||!url){toast('Fill in all fields',true);return}S.providers[id]={kind,base_url:url,keys:[],ban_duration:300,enabled:true};saveState();
+ if(!id||!url){toast('Fill in all fields',true);return}S.providers[id]={kind,base_url:url,keys:[],ban_duration:300,enabled:true};saveState();
 document.getElementById('customProviderForm').style.display='none';S.selectedProvider=id;renderProviders();showProviderConfig(id);toast('Custom provider created')});
 
 // ══ CENTRAL KEYS TAB ══
 function maskKey(k){if(!k)return'••••••••';if(k.length<=8)return'••••••••';return k.slice(0,3)+'*...*'+k.slice(-4)}
 function copyKey(k){navigator.clipboard.writeText(k).then(()=>toast('Key copied ✓')).catch(()=>showModal('Copy failed','Clipboard unavailable — reveal and select manually.'))}
-function renderKeysCentral(){const r=document.getElementById('keysCentral');if(!r)return;const ids=Object.keys(S.providers).filter(k=>S.providers[k]);if(!ids.length){r.innerHTML='<div class="empty-state" style="padding:30px 10px"><p>No providers configured yet.</p></div>';return}let h='';ids.forEach(id=>{const p=S.providers[id],keys=Array.isArray(p.keys)?p.keys:[];h+='<div class="keys-group"><div class="keys-group-head" style="display:flex;align-items:center;justify-content:space-between"><span class="provider-name" style="font-weight:600;color:var(--fg)">'+esc(id)+'</span><button class="btn btn-secondary btn-sm" data-add="'+esc(id)+'">+ Add key</button></div>';if(!keys.length){h+='<div class="key-row"><div class="masked" style="color:var(--fg3)">No keys added</div></div>'}else{keys.forEach((key,i)=>{h+='<div class="key-row" data-pid="'+esc(id)+'" data-idx="'+i+'"><div class="masked">'+maskKey(key)+'</div><div class="eye-btn" role="button" tabindex="0" aria-label="Toggle key '+(i+1)+'">'+EYE_CLOSED+'</div><button class="key-act copy-btn" title="Copy">⧉</button><button class="key-act regen-btn" title="Regenerate">⟳</button><button class="key-act del-btn btn-danger" title="Delete">✕</button></div>'})}h+='</div>'});r.innerHTML=h;r.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>addKeyCentral(b.dataset.add));r.querySelectorAll('.key-row[data-pid]').forEach(row=>{const pid=row.dataset.pid,idx=+row.dataset.idx,key=S.providers[pid].keys[idx],eye=row.querySelector('.eye-btn'),mask=row.querySelector('.masked');let v=false;eye.onclick=()=>{v=!v;mask.textContent=v?key:maskKey(key);mask.classList.toggle('visible',v);eye.innerHTML=v?EYE_OPEN:EYE_CLOSED};eye.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();eye.click()}};row.querySelector('.copy-btn').onclick=()=>copyKey(key);row.querySelector('.del-btn').onclick=()=>deleteKeyCentral(pid,idx);row.querySelector('.regen-btn').onclick=()=>regenKeyCentral(pid,idx)})}
-async function addKeyCentral(pid){const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k||!S.providers[pid])return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not save key',r.error);return}renderKeysCentral();renderProviders();toast('Key added ✓ (verified)')}
+function renderKeysCentral(){const r=document.getElementById('keysCentral');if(!r)return;const ids=Object.keys(S.providers).filter(k=>S.providers[k]);if(!ids.length){r.innerHTML='<div class="empty-state" style="padding:30px 10px"><p>No providers configured yet.</p></div>';return}
+ let tb='<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap"><div class="custom-select" id="centralAddProviderSelect"></div><button class="btn btn-primary btn-sm" id="centralAddKeyBtn">+ Add key</button></div>';
+ let h='';ids.forEach(id=>{const p=S.providers[id],keys=Array.isArray(p.keys)?p.keys:[];h+='<div class="keys-group"><div class="keys-group-head" style="display:flex;align-items:center;justify-content:space-between"><span class="provider-name" style="font-weight:600;color:var(--fg)">'+esc(id)+'</span><button class="btn btn-secondary btn-sm" data-add="'+esc(id)+'">+ Add key</button></div>';if(!keys.length){h+='<div class="key-row"><div class="masked" style="color:var(--fg3)">No keys added</div></div>'}else{keys.forEach((key,i)=>{h+='<div class="key-row" data-pid="'+esc(id)+'" data-idx="'+i+'"><div class="masked">'+maskKey(key)+'</div><div class="eye-btn" role="button" tabindex="0" aria-label="Toggle key '+(i+1)+'">'+EYE_CLOSED+'</div><button class="key-act copy-btn" title="Copy">⧉</button><button class="key-act regen-btn" title="Regenerate">⟳</button><button class="key-act del-btn btn-danger" title="Delete">✕</button></div>'})}h+='</div>'});
+ r.innerHTML=tb+h;
+ if(!centralAddProviderValue||!S.providers[centralAddProviderValue])centralAddProviderValue=ids[0];
+ createCustomSelect('centralAddProviderSelect',ids.map(k=>({value:k,label:k})),centralAddProviderValue,v=>{centralAddProviderValue=v},false);
+ const addBtn=document.getElementById('centralAddKeyBtn');if(addBtn)addBtn.onclick=()=>addKeyCentral(centralAddProviderValue);
+ r.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>addKeyCentral(b.dataset.add));r.querySelectorAll('.key-row[data-pid]').forEach(row=>{const pid=row.dataset.pid,idx=+row.dataset.idx,key=S.providers[pid].keys[idx],eye=row.querySelector('.eye-btn'),mask=row.querySelector('.masked');let v=false;eye.onclick=()=>{v=!v;mask.textContent=v?key:maskKey(key);mask.classList.toggle('visible',v);eye.innerHTML=v?EYE_OPEN:EYE_CLOSED};eye.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();eye.click()}};row.querySelector('.copy-btn').onclick=()=>copyKey(key);row.querySelector('.del-btn').onclick=()=>deleteKeyCentral(pid,idx);row.querySelector('.regen-btn').onclick=()=>regenKeyCentral(pid,idx)})}
+async function addKeyCentral(pid){const k=await openDialog({type:'prompt',title:'Add API key',msg:'Paste an API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Add'});if(!k||!S.providers[pid])return;const r=await persistAddKey(pid,k);if(!r.ok){showModal('Could not save key',r.error);return}renderKeysCentral();renderProviders();toast('Key added ✓ (verified)')}
 async function deleteKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Delete key',msg:'Delete this key for <strong>'+esc(pid)+'</strong>? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not delete key',r.error);return}renderKeysCentral();renderProviders();toast('Key deleted ✓ (verified)')}
 async function regenKeyCentral(pid,idx){const ok=await openDialog({type:'confirm',title:'Regenerate key',msg:'The existing key for <strong>'+esc(pid)+'</strong> will be removed and replaced. Continue?',confirmText:'Regenerate',cancelText:'Cancel'});if(!ok)return;const k=await openDialog({type:'prompt',title:'New API key',msg:'Paste the new API key for <strong>'+esc(pid)+'</strong>:',placeholder:'sk-...',confirmText:'Save'});if(!k)return;const b=S.providers[pid].keys.slice();S.providers[pid].keys.splice(idx,1);S.providers[pid].keys.push(k);const r=await persist();if(!r.ok){S.providers[pid].keys=b;renderKeysCentral();showModal('Could not regenerate key',r.error);return}renderKeysCentral();renderProviders();toast('Key regenerated ✓ (verified)')}
 
@@ -587,11 +613,13 @@ function populateFetchSelect(){
   createCustomSelect('customKindSelect',[{value:'openai-compat',label:'OpenAI-compatible'},{value:'anthropic',label:'Anthropic'}],customKindValue,v=>{customKindValue=v},false);
   createCustomSelect('deviceProviderSelect',[{value:'kiro',label:'kiro'},{value:'antigravity',label:'antigravity'}],deviceProviderValue,v=>{deviceProviderValue=v},false);
 }
-function initFetchModels(){document.getElementById('fetchModelsBtn').addEventListener('click',fetchModels);document.getElementById('modelSearch').addEventListener('input',filterModels);
-document.querySelectorAll('#freeToggle button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#freeToggle button').forEach(x=>x.classList.remove('active'));b.classList.add('active');S.freeOnly=(b.dataset.mode==='free');filterModels()}));
-document.getElementById('selectAllBtn').addEventListener('click',()=>{document.querySelectorAll('#modelList input[type="checkbox"]').forEach(c=>{c.checked=true;S.selectedModels.add(c.dataset.id)})});
-document.getElementById('addCustomModelBtn').addEventListener('click',()=>{const i=document.getElementById('customModelInput'),v=i.value.trim();if(!v)return;if(S.customModels.includes(v)){toast('Already added',true);return}S.customModels.push(v);S.selectedModels.add(v);i.value='';filterModels();toast('Custom model added')});
-document.getElementById('confirmModelsBtn').addEventListener('click',confirmModels)}
+function initFetchModels(){document.getElementById('fetchModelsBtn').addEventListener('click',fetchModels);document.getElementById('modelSearch').addEventListener('input',()=>{modelPage=0;filterModels()});
+ document.querySelectorAll('#freeToggle button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#freeToggle button').forEach(x=>x.classList.remove('active'));b.classList.add('active');S.freeOnly=(b.dataset.mode==='free');modelPage=0;filterModels()}));
+ document.getElementById('selectAllBtn').addEventListener('click',()=>{getFilteredModels().forEach(m=>S.selectedModels.add(m.id));filterModels();toast('Selected all matching models')});
+ document.getElementById('modelPrevBtn').addEventListener('click',()=>{if(modelPage>0){modelPage--;filterModels()}});
+ document.getElementById('modelNextBtn').addEventListener('click',()=>{modelPage++;filterModels()});
+ document.getElementById('addCustomModelBtn').addEventListener('click',()=>{const i=document.getElementById('customModelInput'),v=i.value.trim();if(!v)return;if(S.customModels.includes(v)){toast('Already added',true);return}S.customModels.push(v);S.selectedModels.add(v);i.value='';modelPage=0;filterModels();toast('Custom model added')});
+ document.getElementById('confirmModelsBtn').addEventListener('click',confirmModels)}
 
 function initModelSubTabs(){document.querySelectorAll('#modelSubTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#modelSubTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const sub=b.dataset.sub;document.getElementById('subFetched').classList.toggle('active',sub==='fetched');document.getElementById('subBuiltin').classList.toggle('active',sub==='builtin');if(sub==='builtin')renderSavedModels()}))}
 
@@ -607,16 +635,24 @@ function isFree(id){const n=id.toLowerCase();return n.includes('[free]')||n.incl
   const isImg=id=>{const n=String(id).toLowerCase();return n.includes('flux')||n.includes('sdxl')||n.includes('dall-e')||n.includes('dall_e')||n.includes('stable-diffusion')||n.includes('stable_diffusion')||n.includes('imagen')||n.includes('ideogram')||n.includes('image')};
   ms=ms.map(m=>({...m,image:isImg(m.id)}));
   if(ftype==='images')ms=ms.filter(m=>m.image);else if(ftype==='text')ms=ms.filter(m=>!m.image);
-   S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];document.getElementById('modelArea').style.display='';document.getElementById('modelHint').style.display='none';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
+   S.modelCache[pid]=ms;S.selectedModels.clear();S.customModels=[];modelPage=0;document.getElementById('modelArea').style.display='';document.getElementById('modelHint').style.display='none';document.getElementById('modelSearch').value='';filterModels();toast(ms.length+' models loaded from '+pid)}
   catch(e){showModal('Model fetch failed',e.message)}finally{btn.disabled=false;btn.innerHTML=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Fetch models`}}
 
-function filterModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=fetchProviderValue,models=S.modelCache[pid]||[],list=document.getElementById('modelList');list.innerHTML='';let cnt=0;
-const all=[...models.filter(m=>!S.freeOnly||(m.free===true||isFree(m.id))).filter(m=>!q||m.id.toLowerCase().includes(q)||(m.owned_by||'').toLowerCase().includes(q)).map(m=>({...m,type:(m.free===true||isFree(m.id))?'free':'paid'})),...S.customModels.filter(id=>!q||id.toLowerCase().includes(q)).map(id=>({id,type:'custom'}))];
- all.forEach(m=>{cnt++;const it=document.createElement('div');it.className='model-item';
- const imgTag=m.image?'<span class="free-tag" style="background:rgba(236,72,153,.12);color:#ec4899">IMG</span>':'';
- it.innerHTML=`<input type="checkbox" data-id="${esc(m.id)}" ${S.selectedModels.has(m.id)?'checked':''}><div class="model-id">${esc(m.id)}</div>${imgTag}${m.type==='free'?'<span class="free-tag">FREE</span>':m.type==='custom'?'<span class="free-tag" style="background:rgba(99,102,241,.1);color:var(--accent2)">custom</span>':'<span class="paid-tag">paid</span>'}`;
-it.querySelector('input').addEventListener('change',e=>{if(e.target.checked)S.selectedModels.add(m.id);else S.selectedModels.delete(m.id)});list.appendChild(it)});
-document.getElementById('modelCount').textContent=cnt+' model'+(cnt!==1?'s':'')+(S.freeOnly?' (free only)':'')}
+const MODELS_PER_PAGE=50;
+function getFilteredModels(){const q=document.getElementById('modelSearch').value.toLowerCase(),pid=fetchProviderValue,models=S.modelCache[pid]||[];
+ return [...models.filter(m=>!S.freeOnly||(m.free===true||isFree(m.id))).filter(m=>!q||m.id.toLowerCase().includes(q)||(m.owned_by||'').toLowerCase().includes(q)).map(m=>({...m,type:(m.free===true||isFree(m.id))?'free':'paid'})),
+  ...S.customModels.filter(id=>!q||id.toLowerCase().includes(q)).map(id=>({id,type:'custom'}))];}
+function filterModels(){const all=getFilteredModels(),total=all.length,list=document.getElementById('modelList');
+ const pages=Math.max(1,Math.ceil(total/MODELS_PER_PAGE));if(modelPage>=pages)modelPage=pages-1;if(modelPage<0)modelPage=0;
+ const start=modelPage*MODELS_PER_PAGE,pageItems=all.slice(start,start+MODELS_PER_PAGE);
+ list.innerHTML='';
+ pageItems.forEach(m=>{const it=document.createElement('div');it.className='model-item';
+  const imgTag=m.image?'<span class="free-tag" style="background:rgba(236,72,153,.12);color:#ec4899">IMG</span>':'';
+  it.innerHTML=`<input type="checkbox" data-id="${esc(m.id)}" ${S.selectedModels.has(m.id)?'checked':''}><div class="model-id">${esc(m.id)}</div>${imgTag}${m.type==='free'?'<span class="free-tag">FREE</span>':m.type==='custom'?'<span class="free-tag" style="background:rgba(99,102,241,.1);color:var(--accent2)">custom</span>':'<span class="paid-tag">paid</span>'}`;
+ it.querySelector('input').addEventListener('change',e=>{if(e.target.checked)S.selectedModels.add(m.id);else S.selectedModels.delete(m.id)});list.appendChild(it)});
+ document.getElementById('modelCount').textContent=total+' model'+(total!==1?'s':'')+(S.freeOnly?' (free only)':'')+' · page '+(modelPage+1)+'/'+pages;
+ const prev=document.getElementById('modelPrevBtn'),next=document.getElementById('modelNextBtn');
+ if(prev){prev.disabled=modelPage<=0;next.disabled=modelPage>=pages-1}}
 
 async function confirmModels(){if(!S.selectedModels.size){toast('Select at least one model',true);return}
 const tn=await openDialog({type:'prompt',title:'Save to tier',msg:'Create a new tier or append to an existing one. Enter a tier name:',inputValue:'my-tier',confirmText:'Save'});
@@ -627,7 +663,7 @@ const entries=[...S.selectedModels].map((m,i)=>({provider:pid,model:m,is_default
 const ex=S.tiers.find(t=>t.name===tn);
 const createdNew=!ex;
 const prevLen=ex?ex.entries.length:0;
-if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}else S.tiers.push({name:tn,entries});
+if(ex){entries.forEach(e=>{if(!ex.entries.some(x=>x.provider===e.provider&&x.model===e.model))ex.entries.push(e)})}else{S._dirty=true;S.tiers.push({name:tn,entries});}
 const r=await persist();
 if(!r.ok){
   showModal('Could not save tier',r.error);
@@ -638,22 +674,22 @@ if(!r.ok){
  renderSavedModels();renderTiers();toast(S.selectedModels.size+' models → tier "'+tn+'" ✓ (verified)');updateSteps()}
 
 // ══ TIERS ══
-function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S.tiers.push({name:n,entries:[]});const r=await persist();if(!r.ok){const idx=S.tiers.findIndex(t=>t.name===n);if(idx>=0)S.tiers.splice(idx,1);showModal('Could not create tier',r.error);return}renderSavedModels();renderTiers();toast('Tier "'+n+'" created ✓ (verified)')})}
+function initTierEditor(){document.getElementById('addTierBtn').addEventListener('click',async()=>{const n=await openDialog({type:'prompt',title:'New tier',msg:'Name for the new tier:',placeholder:'my-tier',confirmText:'Create'});if(!n)return;if(S.tiers.find(t=>t.name===n)){toast('Tier exists',true);return}if(!/^[A-Za-z0-9_-]+$/.test(n)){toast('Tier name may only use letters, numbers, - and _',true);return}S._dirty=true;S.tiers.push({name:n,entries:[]});const r=await persist();if(!r.ok){const idx=S.tiers.findIndex(t=>t.name===n);if(idx>=0)S.tiers.splice(idx,1);showModal('Could not create tier',r.error);return}renderSavedModels();renderTiers();toast('Tier "'+n+'" created ✓ (verified)')})}
 
 function renderTiers(){const l=document.getElementById('tierList'),e=document.getElementById('tierEmpty');l.innerHTML='';if(!S.tiers.length){e.style.display='';return}e.style.display='none';
 S.tiers.forEach((tier,ti)=>{const c=document.createElement('div');c.className='tier-card';c.draggable=true;c.dataset.idx=ti;
 let eh='';tier.entries.forEach((en,ei)=>{eh+=`<div class="tier-entry"><div class="custom-select tier-provider-select" data-ti="${ti}" data-ei="${ei}"></div><input type="text" class="entry-model" value="${esc(en.model)}" data-ti="${ti}" data-ei="${ei}" placeholder="model id"><button class="remove-entry" data-ti="${ti}" data-ei="${ei}" title="Remove"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`});
 c.innerHTML=`<div class="tier-header"><div class="grip" title="Drag to reorder">⠿</div><input class="tier-name" value="${esc(tier.name)}" data-ti="${ti}" placeholder="Tier name"><span class="tier-count">${tier.entries.length} entr${tier.entries.length!==1?'ies':'y'}</span><button class="btn btn-secondary btn-sm add-entry-btn" data-ti="${ti}">+ Entry</button><button class="btn btn-danger btn-sm delete-tier-btn" data-ti="${ti}" style="padding:6px 10px">✕</button></div><div class="tier-entries">${eh}</div>`;
-c.querySelector('.tier-name').addEventListener('change',e=>{S.tiers[ti].name=e.target.value.trim()||S.tiers[ti].name;saveState()});
-c.querySelector('.add-entry-btn').addEventListener('click',()=>{S.tiers[ti].entries.push({provider:Object.keys(S.providers)[0]||'opencode-zen',model:'',is_default:false});saveState();renderTiers()});
-c.querySelector('.delete-tier-btn').addEventListener('click',async()=>{const ok=await openDialog({type:'confirm',title:'Delete tier',msg:'Delete tier "'+esc(S.tiers[ti].name)+'"? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;S.tiers.splice(ti,1);saveState();renderTiers();updateSteps();toast('Tier deleted')});
-c.querySelectorAll('.entry-model').forEach(inp=>inp.addEventListener('change',e=>{S.tiers[ti].entries[parseInt(e.target.dataset.ei)].model=e.target.value;saveState()}));
-c.querySelectorAll('.remove-entry').forEach(b=>b.addEventListener('click',()=>{S.tiers[ti].entries.splice(parseInt(b.dataset.ei),1);saveState();renderTiers()}));
+ c.querySelector('.tier-name').addEventListener('change',e=>{S.tiers[ti].name=e.target.value.trim()||S.tiers[ti].name;saveState()});
+ c.querySelector('.add-entry-btn').addEventListener('click',()=>{S.tiers[ti].entries.push({provider:Object.keys(S.providers)[0]||'opencode-zen',model:'',is_default:false});saveState();renderTiers()});
+ c.querySelector('.delete-tier-btn').addEventListener('click',async()=>{const ok=await openDialog({type:'confirm',title:'Delete tier',msg:'Delete tier "'+esc(S.tiers[ti].name)+'"? This cannot be undone.',confirmText:'Delete',cancelText:'Cancel'});if(!ok)return;S.tiers.splice(ti,1);saveState();renderTiers();updateSteps();toast('Tier deleted')});
+ c.querySelectorAll('.entry-model').forEach(inp=>inp.addEventListener('change',e=>{S.tiers[ti].entries[parseInt(e.target.dataset.ei)].model=e.target.value;saveState()}));
+ c.querySelectorAll('.remove-entry').forEach(b=>b.addEventListener('click',()=>{S.tiers[ti].entries.splice(parseInt(b.dataset.ei),1);saveState();renderTiers()}));
 c.addEventListener('dragstart',e=>{c.classList.add('dragging');e.dataTransfer.setData('text/plain',ti);e.dataTransfer.effectAllowed='move'});
 c.addEventListener('dragend',()=>c.classList.remove('dragging'));
 c.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='move';c.classList.add('drag-over')});
 c.addEventListener('dragleave',()=>c.classList.remove('drag-over'));
- c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
+  c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');const f=parseInt(e.dataTransfer.getData('text/plain')),t=ti;if(f===t)return;const[mv]=S.tiers.splice(f,1);S.tiers.splice(t,0,mv);saveState();renderTiers()});
  l.appendChild(c);const pOpts=Object.keys(S.providers).map(p=>({value:p,label:p}));
  tier.entries.forEach((en,ei)=>{const sel=c.querySelector('[data-ti="'+ti+'"][data-ei="'+ei+'"].tier-provider-select');if(sel)createCustomSelect(sel,pOpts,en.provider,v=>{S.tiers[ti].entries[ei].provider=v;saveState()},false)});});renderSavedModels()}
 
