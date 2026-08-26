@@ -438,6 +438,15 @@ fn fetch_models(provider: &str) -> (String, String) {
             )
         }
     };
+
+    // Device-kind providers (kiro / antigravity) keep their tokens in the
+    // off-RAM DeviceStore, not in `p.keys`. Route them through the same
+    // provider abstraction the server uses (reqwest, never curl) so the
+    // device access token never leaks onto the command line.
+    if xrouter_auth::is_device_kind(&p.kind) {
+        return fetch_models_device(provider, p);
+    }
+
     if p.keys.is_empty() {
         return (
             json_error(&format!("no api key configured for provider '{}'", provider)),
@@ -523,6 +532,92 @@ fn fetch_models(provider: &str) -> (String, String) {
             }
             Err(e) => {
                 last_err = format!("invalid JSON from provider: {}", e);
+                continue;
+            }
+        }
+    }
+
+    (json_error(&last_err), "502 Bad Gateway".into())
+}
+
+/// Fetch models for a device-kind provider (kiro / antigravity). The access
+/// tokens live in the off-RAM [`xrouter_auth::DeviceStore`], not in `p.keys`, so
+/// the key-provider curl path above cannot work for them.
+///
+/// Strategy: load the device store, then try each stored account for the
+/// provider in round-robin order (via [`xrouter_auth::DeviceStore::next_account`])
+/// until one successfully lists models. Before each attempt the token is
+/// best-effort refreshed, and on success the (possibly rotated) account is
+/// persisted back to the store. The upstream call goes through the exact same
+/// provider abstraction the server uses (`xrouter_providers::make_provider` +
+/// `reqwest`), so the device token is never passed to a `curl` subprocess.
+///
+/// Returns the same JSON shape as the key path: `{ "data": [ { "id", "free" } ] }`.
+fn fetch_models_device(provider: &str, p: &ProviderConfig) -> (String, String) {
+    let prov_name = xrouter_auth::normalize_provider(&p.kind).to_string();
+
+    let mut store = match xrouter_auth::DeviceStore::load() {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                json_error(&format!("failed to load device store: {}", e)),
+                "500 Internal Server Error".into(),
+            )
+        }
+    };
+
+    let total = store.count_for(&prov_name);
+    if total == 0 {
+        return (
+            json_error(&format!(
+                "no device account configured for provider '{}' — log in first",
+                provider
+            )),
+            "400 Bad Request".into(),
+        );
+    }
+
+    // One shared reqwest client + provider adapter for all account attempts.
+    let client = reqwest::Client::new();
+    let adapter = xrouter_providers::make_provider(&p.kind, p.base_url.clone(), client);
+
+    let mut last_err = String::from("no device accounts available");
+    for _ in 0..total {
+        let mut acct = match store.next_account(&prov_name) {
+            Some(a) => a,
+            None => break,
+        };
+
+        // Best-effort token refresh (warns, does not fail the attempt).
+        if let Err(e) = rt().block_on(xrouter_auth::refresh_if_needed(&mut acct)) {
+            eprintln!(
+                "warn: device token refresh failed for {} account {}: {}",
+                prov_name, acct.account_id, e
+            );
+        }
+
+        match rt().block_on(adapter.list_models(&xrouter_core::ApiKey(acct.access_token.clone()))) {
+            Ok(models) => {
+                // Persist the (possibly refreshed/rotated) account back to the
+                // off-RAM store so the next request reuses the fresh token.
+                store.add_account(acct);
+                if let Err(e) = store.save() {
+                    eprintln!("warn: failed to persist refreshed device account: {}", e);
+                }
+                let models: Vec<Value> = models
+                    .iter()
+                    .map(|m| {
+                        let free = is_free_model(&m.id, None, None);
+                        serde_json::json!({ "id": m.id, "free": free })
+                    })
+                    .collect();
+                return (
+                    serde_json::json!({ "data": models }).to_string(),
+                    "200 OK".into(),
+                );
+            }
+            Err(e) => {
+                last_err = format!("device account {} failed: {}", acct.account_id, e);
                 continue;
             }
         }

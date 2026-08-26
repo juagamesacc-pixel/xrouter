@@ -60,10 +60,12 @@ mod tests {
         // pagination, and server-side key rotation on model fetch, raising it
         // to 80 KB. The error-details debug toggle (See details / hide details
         // with readonly textarea, copy-to-clipboard, full HTTP status + response
-        // body on every error path) raised it to 85 KB.
+        // body on every error path) raised it to 85 KB. Device-login providers
+        // (kiro/antigravity) now appear in Model Discovery and Tier Editor
+        // dropdowns with device-account labels, raising it to 90 KB.
         assert!(
-            WIZARD_HTML_LEN < 85_000,
-            "wizard.html is {} bytes, exceeds 85 KB budget",
+            WIZARD_HTML_LEN < 90_000,
+            "wizard.html is {} bytes, exceeds 90 KB budget",
             WIZARD_HTML_LEN
         );
     }
