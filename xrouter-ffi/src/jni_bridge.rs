@@ -48,13 +48,17 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_init(
                     1 // true
                 }
                 Err(e) => {
-                    tracing::error!("JNI: Failed to start server: {}", e);
+                    let msg = format!("Server start failed: {}", e);
+                    tracing::error!("JNI: {}", msg);
+                    server::set_last_error_for_ui(&msg);
                     0 // false
                 }
             }
         }
         Err(e) => {
-            tracing::error!("JNI: Failed to load config: {}", e);
+            let msg = format!("Config load failed: {}", e);
+            tracing::error!("JNI: {}", msg);
+            server::set_last_error_for_ui(&msg);
             0 // false
         }
     }
@@ -275,14 +279,35 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_restartServer(
                     1 // true
                 }
                 Err(e) => {
-                    tracing::error!("JNI: Failed to restart server: {}", e);
+                    let msg = format!("Server restart failed: {}", e);
+                    tracing::error!("JNI: {}", msg);
+                    server::set_last_error_for_ui(&msg);
                     0 // false
                 }
             }
         }
         Err(e) => {
-            tracing::error!("JNI: Failed to load config for restart: {}", e);
+            let msg = format!("Config reload failed: {}", e);
+            tracing::error!("JNI: {}", msg);
+            server::set_last_error_for_ui(&msg);
             0 // false
         }
+    }
+}
+
+/// JNI: NativeBridge.getLastErrorMessage() -> String?
+/// Returns the last error message from server startup or operation failures.
+/// The error is cleared after being read (consume-once pattern).
+#[no_mangle]
+pub extern "system" fn Java_com_xrouter_app_NativeBridge_getLastErrorMessage(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    match server::get_last_error() {
+        Some(msg) => match env.new_string(&msg) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
     }
 }

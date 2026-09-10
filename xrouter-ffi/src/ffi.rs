@@ -53,13 +53,17 @@ pub unsafe extern "C" fn xrouter_init(config_path: *const c_char) -> i32 {
                     0
                 }
                 Err(e) => {
-                    tracing::error!("Failed to start server: {}", e);
+                    let msg = format!("Server start failed: {}", e);
+                    tracing::error!("{}", msg);
+                    server::set_last_error_for_ui(&msg);
                     -1
                 }
             }
         }
         Err(e) => {
-            tracing::error!("Failed to load config: {}", e);
+            let msg = format!("Config load failed: {}", e);
+            tracing::error!("{}", msg);
+            server::set_last_error_for_ui(&msg);
             -1
         }
     }

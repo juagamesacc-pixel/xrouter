@@ -122,6 +122,11 @@ pub fn get_last_error() -> Option<String> {
     LAST_ERROR.lock().ok().and_then(|guard| guard.clone())
 }
 
+/// Set the last error message for UI consumption (public for JNI bridge)
+pub fn set_last_error_for_ui(msg: &str) {
+    set_last_error(msg);
+}
+
 /// Reload config (hot reload)
 pub fn reload_config(_new_config: Config) -> Result<()> {
     if let Some(runtime) = state::get_runtime() {

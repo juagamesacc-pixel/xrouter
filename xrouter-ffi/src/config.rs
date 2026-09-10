@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use xrouter_config::Config;
 
 /// Server binding configuration (persisted separately from xrouter Config)
@@ -79,55 +79,17 @@ pub fn load_or_create_config(path: Option<&str>) -> Result<Config> {
         xrouter_config::load_from(&config_path)
             .with_context(|| format!("Failed to load config from {:?}", config_path))
     } else {
-        tracing::info!("No config found, creating default at: {:?}", config_path);
-        create_default_config(&config_path)?;
-        xrouter_config::load_from(&config_path)
-            .with_context(|| format!("Failed to load newly created config at {:?}", config_path))
+        tracing::info!("No config found, using built-in defaults at: {:?}", config_path);
+        // Use xrouter's built-in default config (includes opencode-zen, openrouter,
+        // together-image providers and big-pickle, images tiers).
+        // Persist it to disk so the user can edit it in the app's config editor.
+        let cfg = Config::default_with_builtins();
+        if let Err(e) = save_config(&cfg, Some(config_path.to_str().unwrap_or_default())) {
+            tracing::warn!("Failed to persist default config: {}", e);
+            // Non-fatal: the in-memory config is still valid
+        }
+        Ok(cfg)
     }
-}
-
-/// Create a sensible default configuration
-fn create_default_config(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let default_toml = r#"# xrouter configuration
-# Edit this file or use the app's Settings UI
-
-[tiers.openai]
-provider = "openai"
-api_keys = []
-rate_limit = 60
-daily_limit = 1000
-timeout_secs = 120
-max_retries = 3
-
-[tiers.anthropic]
-provider = "anthropic"
-api_keys = []
-rate_limit = 60
-daily_limit = 1000
-timeout_secs = 120
-max_retries = 3
-
-[tiers.gemini]
-provider = "gemini"
-api_keys = []
-rate_limit = 60
-daily_limit = 1000
-timeout_secs = 120
-max_retries = 3
-
-[defaults]
-tier = "openai"
-fallback_tiers = ["anthropic", "gemini"]
-health_check_interval_secs = 300
-"#;
-
-    std::fs::write(path, default_toml)?;
-    tracing::info!("Created default config at {:?}", path);
-    Ok(())
 }
 
 /// Save config to file
