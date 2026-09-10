@@ -1,6 +1,8 @@
 pub mod cache;
 pub use cache::ModelCache;
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -55,17 +57,7 @@ pub trait Provider: Send + Sync {
     fn base_url(&self) -> &str;
 }
 
-pub struct OpenAiCompatAdapter {
-    pub base_url: String,
-    pub client: Client,
-}
-
-impl OpenAiCompatAdapter {
-    pub fn new(base_url: String, client: Client) -> Self { Self { base_url, client } }
-}
-
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+// ── OpenCode CLI Session Emulator ──────────────────────────────────────────
 
 struct OpenCodeSessionState {
     session_id: String,
@@ -85,7 +77,6 @@ fn get_opencode_cli_headers() -> (String, String, String) {
     let mut lock = OPENCODE_SESSION.lock().unwrap();
     let now = Instant::now();
 
-    // Reuse the active conversation session if last request was < 30 minutes ago
     let session_id = match &mut *lock {
         Some(s) if now.duration_since(s.last_seen) < Duration::from_secs(1800) => {
             s.last_seen = now;
@@ -118,58 +109,7 @@ fn get_opencode_cli_headers() -> (String, String, String) {
     (session_id, "global".to_string(), req_id)
 }
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
-struct OpenCodeSessionState {
-    session_id: String,
-    last_seen: Instant,
-}
-
-static OPENCODE_SESSION: Mutex<Option<OpenCodeSessionState>> = Mutex::new(None);
-
-/// Generates headers matching the official OpenCode CLI:
-/// 1. Stable `x-opencode-session` across the entire agent conversation (preserves hot prompt caching).
-/// 2. Automatically rotates to a fresh session if idle for > 30 minutes.
-/// 3. Monotonically increasing `x-opencode-request` per turn.
-fn get_opencode_cli_headers() -> (String, String, String) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-    let mut lock = OPENCODE_SESSION.lock().unwrap();
-    let now = Instant::now();
-
-    let session_id = match &mut *lock {
-        Some(s) if now.duration_since(s.last_seen) < Duration::from_secs(1800) => {
-            s.last_seen = now;
-            s.session_id.clone()
-        }
-        _ => {
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            let new_id = format!("ses_{:x}_{:x}", std::process::id(), t);
-            *lock = Some(OpenCodeSessionState {
-                session_id: new_id.clone(),
-                last_seen: now,
-            });
-            new_id
-        }
-    };
-
-    let req_num = REQ_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let req_id = format!(
-        "msg_{:x}_{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        req_num
-    );
-
-    (session_id, "global".to_string(), req_id)
-}
+// ── OpenAI-Compatible Adapter ──────────────────────────────────────────────
 
 pub struct OpenAiCompatAdapter {
     pub base_url: String,
@@ -189,7 +129,6 @@ impl Provider for OpenAiCompatAdapter {
         let mut req = self.client.get(&url)
             .header("Authorization", format!("Bearer {}", key.expose()));
 
-        // Emulate official CLI headers for OpenCode Zen discovery
         if self.base_url.contains("opencode.ai") {
             let (session_id, project_id, request_id) = get_opencode_cli_headers();
             req = req
@@ -246,13 +185,10 @@ impl Provider for OpenAiCompatAdapter {
             .header("Content-Type", "application/json")
             .json(&ctx.body);
 
-        // Signal SSE support when the caller wants a streamed response so
-        // upstreams return `text/event-stream` instead of buffering.
         if ctx.stream {
             req = req.header("Accept", "text/event-stream");
         }
 
-        // OpenCode Zen free-tier models (big-pickle, mimo-v2.5-free) require official CLI identity
         if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
             let (session_id, project_id, request_id) = get_opencode_cli_headers();
             req = req
@@ -268,8 +204,6 @@ impl Provider for OpenAiCompatAdapter {
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         let is_stream = ctx.stream;
-        // Hand the raw response to the caller. The server decides whether to
-        // buffer (`bytes()`) or stream passthrough (`bytes_stream()`).
         Ok(UpstreamResponse { status, headers, is_stream, response: resp })
     }
 
@@ -294,7 +228,6 @@ impl Provider for OpenAiCompatAdapter {
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
-        // Image responses are never streamed in this router.
         Ok(UpstreamResponse { status, headers, is_stream: false, response: resp })
     }
 
@@ -306,6 +239,8 @@ impl Provider for OpenAiCompatAdapter {
         &self.base_url
     }
 }
+
+// ── Anthropic Adapter ──────────────────────────────────────────────────────
 
 pub struct AnthropicAdapter {
     pub base_url: String,
@@ -321,7 +256,6 @@ impl AnthropicAdapter {
 #[async_trait]
 impl Provider for AnthropicAdapter {
     async fn list_models(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
-        // If the Anthropic-compatible provider is OpenCode, fetch its model catalog
         if self.base_url.contains("opencode.ai") {
             let url = format!("{}/models", self.base_url.trim_end_matches('/'));
             let (session_id, project_id, request_id) = get_opencode_cli_headers();
@@ -351,7 +285,6 @@ impl Provider for AnthropicAdapter {
                 return Ok(out);
             }
         }
-        // Standard native Anthropic has no list_models endpoint; return empty
         Ok(vec![])
     }
 
@@ -363,12 +296,10 @@ impl Provider for AnthropicAdapter {
             .header("Content-Type", "application/json")
             .json(&ctx.body);
 
-        // Ensure upstream emits text/event-stream for SSE streams
         if ctx.stream {
             req = req.header("Accept", "text/event-stream");
         }
 
-        // Emulate official OpenCode CLI headers if targeting OpenCode
         if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
             let (session_id, project_id, request_id) = get_opencode_cli_headers();
             req = req
@@ -395,17 +326,8 @@ impl Provider for AnthropicAdapter {
     }
 }
 
-/// Provider that authenticates via the device-login flow. The `api_key` field
-/// of `RequestCtx` carries the (already refreshed) device access token, which
-/// is sent as a `Bearer` credential. Some device providers (e.g. antigravity)
-/// also require an extra static header (e.g. `X-Goog-*`), supplied here.
-///
-/// `kind` is the normalized provider name (`kiro`, `antigravity`, or a generic
-/// `device:<name>` bare name). It selects the model-discovery strategy used by
-/// [`DeviceProvider::list_models`]. `profile_arn` is an optional CodeWhisperer
-/// profile ARN used by kiro to derive its runtime AWS region; it is `None` when
-/// not available (e.g. when built via [`make_provider`]), in which case kiro
-/// falls back to `us-east-1`.
+// ── Device Provider (Kiro / Antigravity) ────────────────────────────────────
+
 pub struct DeviceProvider {
     pub base_url: String,
     pub client: Client,
@@ -425,11 +347,8 @@ impl DeviceProvider {
         Self { base_url, client, extra_headers, kind, profile_arn }
     }
 
-    /// kiro model discovery against the AWS Q / CodeWhisperer
-    /// `ListAvailableModels` endpoint.
     async fn list_models_kiro(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
         let primary_region = kiro_region_from_arn(self.profile_arn.as_deref());
-        // Try the derived region first, then fall back to us-east-1 once.
         let regions: Vec<String> = if primary_region == "us-east-1" {
             vec!["us-east-1".to_string()]
         } else {
@@ -439,8 +358,6 @@ impl DeviceProvider {
         for region in &regions {
             let base = kiro_q_base_url(region);
             let url = format!("{}/ListAvailableModels?origin=AI_EDITOR", base.trim_end_matches('/'));
-            // Bound each attempt so a hung/unreachable AWS endpoint can't
-            // wedge the caller (wizard/server) indefinitely.
             match tokio::time::timeout(
                 std::time::Duration::from_secs(20),
                 kiro_fetch_models(&self.client, &url, key),
@@ -468,8 +385,6 @@ impl DeviceProvider {
             .collect())
     }
 
-    /// antigravity model discovery against the Google Cloud Code
-    /// `fetchAvailableModels` endpoint.
     async fn list_models_antigravity(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
         let primary = std::env::var("ANTIGRAVITY_API_BASE")
             .unwrap_or_else(|_| "https://daily-cloudcode-pa.googleapis.com".to_string());
@@ -477,7 +392,6 @@ impl DeviceProvider {
         let mut last_err = String::new();
         for (i, base) in endpoints.iter().enumerate() {
             let url = format!("{}/v1internal:fetchAvailableModels", base.trim_end_matches('/'));
-            // Bound each attempt (see kiro note above).
             match tokio::time::timeout(
                 std::time::Duration::from_secs(20),
                 antigravity_fetch_models(&self.client, &url, key, &self.extra_headers),
@@ -486,9 +400,6 @@ impl DeviceProvider {
             {
                 Ok(Ok(models)) if !models.is_empty() => return Ok(models),
                 Ok(Ok(_)) => {
-                    // Per spec, an empty parse falls through to the fallback
-                    // catalog; we still try the secondary endpoint for
-                    // robustness before giving up.
                     last_err = format!("endpoint[{i}] {url} returned no parseable models");
                     continue;
                 }
@@ -518,18 +429,11 @@ impl DeviceProvider {
 #[async_trait]
 impl Provider for DeviceProvider {
     async fn list_models(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
-        // `self.kind` may be stored as the bare name (`kiro`) or the
-        // device-normalized form (`device:kiro`). Normalize before matching so
-        // both route to the correct device-specific discovery path instead of
-        // falling through to the generic `GET {base}/models` fallback (which
-        // 403s for kiro/antigravity).
         let normalized = device_provider_name(&self.kind).to_string();
         match normalized.as_str() {
             "kiro" => self.list_models_kiro(key).await,
             "antigravity" => self.list_models_antigravity(key).await,
             _ => {
-                // Generic device provider: original openai-compat style
-                // `GET {base}/models`.
                 let url = format!("{}/models", self.base_url.trim_end_matches('/'));
                 let mut req = self.client
                     .get(&url)
@@ -610,23 +514,18 @@ impl Provider for DeviceProvider {
     fn base_url(&self) -> &str { &self.base_url }
 }
 
-/// True if `kind` is a device-login provider (`kiro`, `antigravity`,
-/// `device:<name>`).
 pub fn is_device_kind(kind: &str) -> bool {
     xrouter_auth::is_device_kind(kind)
 }
 
-/// Bare provider name for a device `kind` (`device:kiro` -> `kiro`).
 pub fn device_provider_name(kind: &str) -> &str {
     xrouter_auth::normalize_provider(kind)
 }
 
-/// Extra static headers required on upstream requests for a device provider.
 pub fn device_extra_headers(kind: &str) -> reqwest::header::HeaderMap {
     xrouter_auth::upstream_extra_headers(kind)
 }
 
-/// Factory
 pub fn make_provider(kind: &str, base_url: String, client: Client) -> Box<dyn Provider> {
     match kind {
         "anthropic" => Box::new(AnthropicAdapter { base_url, client }),
@@ -643,7 +542,6 @@ pub fn make_provider(kind: &str, base_url: String, client: Client) -> Box<dyn Pr
     }
 }
 
-/// Static fallback catalog served when kiro model discovery fails entirely.
 const KIRO_FALLBACK: &[&str] = &[
     "claude-sonnet-4.5",
     "claude-haiku-4.5",
@@ -653,8 +551,6 @@ const KIRO_FALLBACK: &[&str] = &[
     "claude-3-7-sonnet",
 ];
 
-/// Static fallback catalog served when antigravity model discovery fails
-/// entirely or yields no parseable models.
 const ANTIGRAVITY_FALLBACK: &[&str] = &[
     "gemini-3-pro-preview",
     "gemini-3-flash-preview",
@@ -664,9 +560,6 @@ const ANTIGRAVITY_FALLBACK: &[&str] = &[
     "claude-opus-4-6-thinking",
 ];
 
-/// Derive the kiro/CodeWhisperer AWS region from a profile ARN of the form
-/// `arn:aws:codewhisperer:{region}:...`. Falls back to `us-east-1` when the
-/// ARN is absent or malformed.
 pub fn kiro_region_from_arn(profile_arn: Option<&str>) -> String {
     const DEFAULT: &str = "us-east-1";
     let arn = match profile_arn {
@@ -685,14 +578,11 @@ pub fn kiro_region_from_arn(profile_arn: Option<&str>) -> String {
     }
 }
 
-/// Base URL for the kiro `ListAvailableModels` endpoint. Env-overridable via
-/// `KIRO_Q_BASE_URL`; otherwise derived from the runtime region.
 pub fn kiro_q_base_url(region: &str) -> String {
     std::env::var("KIRO_Q_BASE_URL")
         .unwrap_or_else(|_| format!("https://q.{}.amazonaws.com", region))
 }
 
-/// Fetch and parse kiro `ListAvailableModels`.
 async fn kiro_fetch_models(
     client: &Client,
     url: &str,
@@ -715,8 +605,6 @@ async fn kiro_fetch_models(
     Ok(parse_kiro_models(&v))
 }
 
-/// Parse a kiro `ListAvailableModels` response. The documented shape is
-/// `{ "models": [ { "modelId": "...", "modelName"?: ..., "tokenLimits"?: {...} } ] }`.
 pub fn parse_kiro_models(v: &serde_json::Value) -> Vec<RawModel> {
     let mut out = Vec::new();
     if let Some(arr) = v.get("models").and_then(|m| m.as_array()) {
@@ -733,7 +621,6 @@ pub fn parse_kiro_models(v: &serde_json::Value) -> Vec<RawModel> {
     out
 }
 
-/// Fetch and defensively parse antigravity `fetchAvailableModels`.
 async fn antigravity_fetch_models(
     client: &Client,
     url: &str,
@@ -761,10 +648,6 @@ async fn antigravity_fetch_models(
     Ok(parse_antigravity_models(&v))
 }
 
-/// Defensively parse an antigravity `fetchAvailableModels` response. The shape
-/// is not stable across versions, so we look for model arrays under `models`
-/// or `availableModels` (and accept a top-level array), and read each entry's
-/// id from `modelId`, `id`, or `name`.
 pub fn parse_antigravity_models(v: &serde_json::Value) -> Vec<RawModel> {
     let mut out = Vec::new();
     let mut items: Vec<&serde_json::Value> = Vec::new();
@@ -837,7 +720,6 @@ mod tests {
 
     #[test]
     fn antigravity_defensive_parse_models() {
-        // shape 1: models array with modelId
         let v1 = serde_json::json!({
             "models": [
                 { "modelId": "gemini-3-pro-preview" },
@@ -848,7 +730,6 @@ mod tests {
         assert_eq!(m1.len(), 2);
         assert_eq!(m1[0].id, "gemini-3-pro-preview");
 
-        // shape 2: availableModels with id
         let v2 = serde_json::json!({
             "availableModels": [
                 { "id": "gemini-2.5-pro" },
@@ -859,7 +740,6 @@ mod tests {
         assert_eq!(m2.len(), 2);
         assert_eq!(m2[0].id, "gemini-2.5-pro");
 
-        // shape 3: top-level array, id under name then modelId
         let v3 = serde_json::json!([
             { "name": "claude-sonnet-4-5-thinking" },
             { "modelId": "claude-opus-4-6-thinking" }
@@ -869,7 +749,6 @@ mod tests {
         assert_eq!(m3[0].id, "claude-sonnet-4-5-thinking");
         assert_eq!(m3[1].id, "claude-opus-4-6-thinking");
 
-        // shape 4: unrecognized -> empty
         assert!(parse_antigravity_models(&serde_json::json!({})).is_empty());
         assert!(parse_antigravity_models(&serde_json::json!({ "foo": "bar" })).is_empty());
     }
@@ -882,14 +761,10 @@ mod tests {
 
     #[test]
     fn device_kind_normalization_routes_correctly() {
-        // The stored kind may be the bare name or the device-normalized form.
-        // Both must route to the matching device-specific discovery arm rather
-        // than the generic `GET {base}/models` fallback (the kiro 403 bug).
         assert_eq!(device_provider_name("kiro"), "kiro");
         assert_eq!(device_provider_name("device:kiro"), "kiro");
         assert_eq!(device_provider_name("antigravity"), "antigravity");
         assert_eq!(device_provider_name("device:antigravity"), "antigravity");
-        // A generic device kind stays generic (no special-cased arm).
         assert_eq!(device_provider_name("device:somethingelse"), "somethingelse");
     }
 }
