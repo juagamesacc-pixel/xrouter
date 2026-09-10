@@ -64,15 +64,122 @@ impl OpenAiCompatAdapter {
     pub fn new(base_url: String, client: Client) -> Self { Self { base_url, client } }
 }
 
-fn opencode_session_id() -> String {
-    format!(
-        "session_{}_{}",
-        std::process::id(),
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+struct OpenCodeSessionState {
+    session_id: String,
+    last_seen: Instant,
+}
+
+static OPENCODE_SESSION: Mutex<Option<OpenCodeSessionState>> = Mutex::new(None);
+
+/// Generates headers identical to the official OpenCode CLI:
+/// 1. Stable `x-opencode-session` across the conversation (sticky caching & no RPM penalty).
+/// 2. Rotates to a new session if idle for >30 minutes.
+/// 3. Unique `x-opencode-request` per HTTP call.
+fn get_opencode_cli_headers() -> (String, String, String) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    let mut lock = OPENCODE_SESSION.lock().unwrap();
+    let now = Instant::now();
+
+    // Reuse the active conversation session if last request was < 30 minutes ago
+    let session_id = match &mut *lock {
+        Some(s) if now.duration_since(s.last_seen) < Duration::from_secs(1800) => {
+            s.last_seen = now;
+            s.session_id.clone()
+        }
+        _ => {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let new_id = format!("ses_{:x}_{:x}", std::process::id(), t);
+            *lock = Some(OpenCodeSessionState {
+                session_id: new_id.clone(),
+                last_seen: now,
+            });
+            new_id
+        }
+    };
+
+    let req_num = REQ_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let req_id = format!(
+        "msg_{:x}_{:x}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis()
-    )
+            .as_millis(),
+        req_num
+    );
+
+    (session_id, "global".to_string(), req_id)
+}
+
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+struct OpenCodeSessionState {
+    session_id: String,
+    last_seen: Instant,
+}
+
+static OPENCODE_SESSION: Mutex<Option<OpenCodeSessionState>> = Mutex::new(None);
+
+/// Generates headers matching the official OpenCode CLI:
+/// 1. Stable `x-opencode-session` across the entire agent conversation (preserves hot prompt caching).
+/// 2. Automatically rotates to a fresh session if idle for > 30 minutes.
+/// 3. Monotonically increasing `x-opencode-request` per turn.
+fn get_opencode_cli_headers() -> (String, String, String) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    let mut lock = OPENCODE_SESSION.lock().unwrap();
+    let now = Instant::now();
+
+    let session_id = match &mut *lock {
+        Some(s) if now.duration_since(s.last_seen) < Duration::from_secs(1800) => {
+            s.last_seen = now;
+            s.session_id.clone()
+        }
+        _ => {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let new_id = format!("ses_{:x}_{:x}", std::process::id(), t);
+            *lock = Some(OpenCodeSessionState {
+                session_id: new_id.clone(),
+                last_seen: now,
+            });
+            new_id
+        }
+    };
+
+    let req_num = REQ_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let req_id = format!(
+        "msg_{:x}_{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        req_num
+    );
+
+    (session_id, "global".to_string(), req_id)
+}
+
+pub struct OpenAiCompatAdapter {
+    pub base_url: String,
+    pub client: Client,
+}
+
+impl OpenAiCompatAdapter {
+    pub fn new(base_url: String, client: Client) -> Self {
+        Self { base_url, client }
+    }
 }
 
 #[async_trait]
@@ -82,9 +189,16 @@ impl Provider for OpenAiCompatAdapter {
         let mut req = self.client.get(&url)
             .header("Authorization", format!("Bearer {}", key.expose()));
 
-        // OpenCode Zen requires an X-Session-ID header
+        // Emulate official CLI headers for OpenCode Zen discovery
         if self.base_url.contains("opencode.ai") {
-            req = req.header("X-Session-ID", opencode_session_id());
+            let (session_id, project_id, request_id) = get_opencode_cli_headers();
+            req = req
+                .header("User-Agent", "opencode/latest/1.3.15/cli")
+                .header("x-opencode-client", "cli")
+                .header("x-opencode-session", &session_id)
+                .header("x-opencode-project", &project_id)
+                .header("x-opencode-request", &request_id)
+                .header("X-Session-ID", &session_id);
         }
 
         let resp = req.send().await?;
@@ -97,12 +211,14 @@ impl Provider for OpenAiCompatAdapter {
             anyhow::bail!("list_models {}: {}", status, txt);
         }
         let v: serde_json::Value = resp.json().await?;
-        // OpenAI format: { "data": [ { "id": "..."} ] } or { "models": [...] } or array directly
         let mut out = Vec::new();
         if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
             for item in arr {
                 if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
-                    out.push(RawModel { id: id.to_string(), name: item.get("name").and_then(|x| x.as_str()).map(|s| s.to_string()) });
+                    out.push(RawModel {
+                        id: id.to_string(),
+                        name: item.get("name").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                    });
                 }
             }
         } else if let Some(arr) = v.get("models").and_then(|d| d.as_array()) {
@@ -119,8 +235,6 @@ impl Provider for OpenAiCompatAdapter {
                     out.push(RawModel { id: s.to_string(), name: None });
                 }
             }
-        } else {
-            // fallback: try to parse as {"data": [{"id":...}]} already handled; if empty return empty
         }
         Ok(out)
     }
@@ -138,9 +252,16 @@ impl Provider for OpenAiCompatAdapter {
             req = req.header("Accept", "text/event-stream");
         }
 
-        // OpenCode Zen free-tier models (big-pickle, mimo-v2.5-free) require an X-Session-ID
+        // OpenCode Zen free-tier models (big-pickle, mimo-v2.5-free) require official CLI identity
         if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
-            req = req.header("X-Session-ID", opencode_session_id());
+            let (session_id, project_id, request_id) = get_opencode_cli_headers();
+            req = req
+                .header("User-Agent", "opencode/latest/1.3.15/cli")
+                .header("x-opencode-client", "cli")
+                .header("x-opencode-session", &session_id)
+                .header("x-opencode-project", &project_id)
+                .header("x-opencode-request", &request_id)
+                .header("X-Session-ID", &session_id);
         }
 
         let resp = req.send().await?;
@@ -160,7 +281,14 @@ impl Provider for OpenAiCompatAdapter {
             .json(&ctx.body);
 
         if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
-            req = req.header("X-Session-ID", opencode_session_id());
+            let (session_id, project_id, request_id) = get_opencode_cli_headers();
+            req = req
+                .header("User-Agent", "opencode/latest/1.3.15/cli")
+                .header("x-opencode-client", "cli")
+                .header("x-opencode-session", &session_id)
+                .header("x-opencode-project", &project_id)
+                .header("x-opencode-request", &request_id)
+                .header("X-Session-ID", &session_id);
         }
 
         let resp = req.send().await?;
@@ -170,8 +298,13 @@ impl Provider for OpenAiCompatAdapter {
         Ok(UpstreamResponse { status, headers, is_stream: false, response: resp })
     }
 
-    fn protocol(&self) -> xrouter_core::Protocol { xrouter_core::Protocol::OpenAiCompat }
-    fn base_url(&self) -> &str { &self.base_url }
+    fn protocol(&self) -> xrouter_core::Protocol {
+        xrouter_core::Protocol::OpenAiCompat
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
 }
 
 pub struct AnthropicAdapter {
@@ -180,13 +313,45 @@ pub struct AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
-    pub fn new(base_url: String, client: Client) -> Self { Self { base_url, client } }
+    pub fn new(base_url: String, client: Client) -> Self {
+        Self { base_url, client }
+    }
 }
 
 #[async_trait]
 impl Provider for AnthropicAdapter {
-    async fn list_models(&self, _key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
-        // Anthropic does not have a list models endpoint; return empty
+    async fn list_models(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
+        // If the Anthropic-compatible provider is OpenCode, fetch its model catalog
+        if self.base_url.contains("opencode.ai") {
+            let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+            let (session_id, project_id, request_id) = get_opencode_cli_headers();
+            let resp = self.client.get(&url)
+                .header("Authorization", format!("Bearer {}", key.expose()))
+                .header("User-Agent", "opencode/latest/1.3.15/cli")
+                .header("x-opencode-client", "cli")
+                .header("x-opencode-session", &session_id)
+                .header("x-opencode-project", &project_id)
+                .header("x-opencode-request", &request_id)
+                .header("X-Session-ID", &session_id)
+                .send().await?;
+            let status = resp.status();
+            if status.is_success() {
+                let v: serde_json::Value = resp.json().await?;
+                let mut out = Vec::new();
+                if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+                    for item in arr {
+                        if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
+                            out.push(RawModel {
+                                id: id.to_string(),
+                                name: item.get("name").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                            });
+                        }
+                    }
+                }
+                return Ok(out);
+            }
+        }
+        // Standard native Anthropic has no list_models endpoint; return empty
         Ok(vec![])
     }
 
@@ -198,10 +363,21 @@ impl Provider for AnthropicAdapter {
             .header("Content-Type", "application/json")
             .json(&ctx.body);
 
-        // STRICT: Attach X-Session-ID ONLY if the upstream target is OpenCode.
-        // Official Anthropic (api.anthropic.com) and all other providers are strictly untouched.
+        // Ensure upstream emits text/event-stream for SSE streams
+        if ctx.stream {
+            req = req.header("Accept", "text/event-stream");
+        }
+
+        // Emulate official OpenCode CLI headers if targeting OpenCode
         if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
-            req = req.header("X-Session-ID", opencode_session_id());
+            let (session_id, project_id, request_id) = get_opencode_cli_headers();
+            req = req
+                .header("User-Agent", "opencode/latest/1.3.15/cli")
+                .header("x-opencode-client", "cli")
+                .header("x-opencode-session", &session_id)
+                .header("x-opencode-project", &project_id)
+                .header("x-opencode-request", &request_id)
+                .header("X-Session-ID", &session_id);
         }
 
         let resp = req.send().await?;
@@ -210,8 +386,13 @@ impl Provider for AnthropicAdapter {
         Ok(UpstreamResponse { status, headers, is_stream: ctx.stream, response: resp })
     }
 
-    fn protocol(&self) -> xrouter_core::Protocol { xrouter_core::Protocol::Anthropic }
-    fn base_url(&self) -> &str { &self.base_url }
+    fn protocol(&self) -> xrouter_core::Protocol {
+        xrouter_core::Protocol::Anthropic
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
 }
 
 /// Provider that authenticates via the device-login flow. The `api_key` field
