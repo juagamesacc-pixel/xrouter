@@ -104,7 +104,7 @@ pub extern "C" fn xrouter_is_running() -> i32 {
         None => return 0,
     };
 
-    match runtime.block_on(state::is_running()) {
+    match runtime.block_on(server::is_running()) {
         true => 1,
         false => 0,
     }
