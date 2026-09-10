@@ -1165,17 +1165,68 @@ fn main() {
 }
 
 fn handle(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
-    let mut buf = vec![0u8; 2 * 1024 * 1024];
-    let n = stream.read(&mut buf)?;
-    if n == 0 {
-        return Ok(());
-    }
-    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+    let mut buf = Vec::new();
+    let mut temp_buf = [0u8; 4096];
 
-    let first = match req.lines().next() {
+    // 1. Read until we find the end of the HTTP headers (\r\n\r\n or \n\n)
+    let mut header_end = None;
+    loop {
+        let n = stream.read(&mut temp_buf)?;
+        if n == 0 {
+            if buf.is_empty() {
+                return Ok(());
+            }
+            break; // EOF
+        }
+        buf.extend_from_slice(&temp_buf[..n]);
+
+        // Check if we have the full headers yet
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            header_end = Some((pos, 4));
+            break;
+        } else if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+            header_end = Some((pos, 2));
+            break;
+        }
+    }
+
+    let (header_pos, terminator_len) = match header_end {
+        Some(pos) => pos,
+        None => return Ok(()), // Malformed request
+    };
+
+    // 2. Parse Content-Length from the headers
+    let headers_str = String::from_utf8_lossy(&buf[..header_pos]);
+    let mut content_length = 0;
+    for line in headers_str.lines() {
+        let line_lower = line.to_lowercase();
+        if line_lower.starts_with("content-length:") {
+            if let Some(len_str) = line_lower.split(':').nth(1) {
+                content_length = len_str.trim().parse::<usize>().unwrap_or(0);
+            }
+        }
+    }
+
+    // 3. Keep reading until the body exactly matches Content-Length
+    let body_start = header_pos + terminator_len;
+    let mut current_body_len = buf.len() - body_start;
+
+    while current_body_len < content_length {
+        let n = stream.read(&mut temp_buf)?;
+        if n == 0 {
+            break; // Unexpected disconnect
+        }
+        buf.extend_from_slice(&temp_buf[..n]);
+        current_body_len += n;
+    }
+
+    // 4. Extract Method, Path, and Body
+    let req_text = String::from_utf8_lossy(&buf).to_string();
+    let first = match req_text.lines().next() {
         Some(l) => l.to_string(),
         None => return Ok(()),
     };
+    
     let mut parts = first.split_whitespace();
     let method = parts.next().unwrap_or("GET").to_string();
     let full_path = parts.next().unwrap_or("/").to_string();
@@ -1185,15 +1236,13 @@ fn handle(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
         None => (full_path, String::new()),
     };
 
-    // Body (everything after the header terminator).
-    let body = if let Some(pos) = req.find("\r\n\r\n") {
-        req[pos + 4..].to_string()
-    } else if let Some(pos) = req.find("\n\n") {
-        req[pos + 2..].to_string()
+    let body = if buf.len() > body_start {
+        String::from_utf8_lossy(&buf[body_start..]).to_string()
     } else {
         String::new()
     };
 
+    // 5. Route the request
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => respond(stream, xrouter_wizard::WIZARD_HTML, "200 OK", "text/html; charset=utf-8"),
         ("GET", "/metrics") => {
