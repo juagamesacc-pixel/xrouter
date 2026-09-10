@@ -69,18 +69,13 @@ pub unsafe extern "C" fn xrouter_init(config_path: *const c_char) -> i32 {
 ///
 /// # Returns
 /// * Pointer to null-terminated C string (e.g., "127.0.0.1:3001")
-/// * Null if server is not running
+/// * Null if server info is not set
 ///
 /// # Safety
 /// Caller must free the returned string with `xrouter_free_string`.
 #[no_mangle]
 pub unsafe extern "C" fn xrouter_get_address() -> *mut c_char {
-    let runtime = match state::get_runtime() {
-        Some(r) => r,
-        None => return ptr::null_mut(),
-    };
-
-    let info = match runtime.block_on(state::get_server_info()) {
+    let info = match state::get_server_info_sync() {
         Some(info) => info,
         None => return ptr::null_mut(),
     };
@@ -95,19 +90,11 @@ pub unsafe extern "C" fn xrouter_get_address() -> *mut c_char {
 /// Check if the server is currently running.
 ///
 /// # Returns
-/// * 1 if running
+/// * 1 if running (state initialized AND listening)
 /// * 0 if not running
 #[no_mangle]
 pub extern "C" fn xrouter_is_running() -> i32 {
-    let runtime = match state::get_runtime() {
-        Some(r) => r,
-        None => return 0,
-    };
-
-    match runtime.block_on(server::is_running()) {
-        true => 1,
-        false => 0,
-    }
+    if server::is_running() { 1 } else { 0 }
 }
 
 /// Get the current configuration as a JSON C string.
@@ -220,18 +207,13 @@ pub extern "C" fn xrouter_shutdown() -> i32 {
 ///
 /// # Returns
 /// * Pointer to null-terminated C string with full URL
-/// * Null if server is not running
+/// * Null if server info is not set
 ///
 /// # Safety
 /// Caller must free the returned string with `xrouter_free_string`.
 #[no_mangle]
 pub unsafe extern "C" fn xrouter_get_url() -> *mut c_char {
-    let runtime = match state::get_runtime() {
-        Some(r) => r,
-        None => return ptr::null_mut(),
-    };
-
-    let info = match runtime.block_on(state::get_server_info()) {
+    let info = match state::get_server_info_sync() {
         Some(info) => info,
         None => return ptr::null_mut(),
     };
@@ -240,6 +222,22 @@ pub unsafe extern "C" fn xrouter_get_url() -> *mut c_char {
     match CString::new(url) {
         Ok(s) => s.into_raw(),
         Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Get the last error message from the server.
+///
+/// # Returns
+/// * Pointer to null-terminated C string with error message
+/// * Null if no error
+///
+/// # Safety
+/// Caller must free the returned string with `xrouter_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn xrouter_get_last_error() -> *mut c_char {
+    match server::get_last_error() {
+        Some(msg) => CString::new(msg).map(|s| s.into_raw()).unwrap_or(ptr::null_mut()),
+        None => ptr::null_mut(),
     }
 }
 

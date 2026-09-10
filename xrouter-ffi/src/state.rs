@@ -53,3 +53,10 @@ pub fn set_server_info(info: ServerInfo) {
 pub async fn get_server_info() -> Option<ServerInfo> {
     SERVER_INFO.get()?.read().await.clone()
 }
+
+/// Synchronous version — try_read without blocking.
+/// Returns None if the lock is currently held (shouldn't happen in practice).
+pub fn get_server_info_sync() -> Option<ServerInfo> {
+    let cell = SERVER_INFO.get()?;
+    cell.try_read().ok().and_then(|guard| guard.clone())
+}

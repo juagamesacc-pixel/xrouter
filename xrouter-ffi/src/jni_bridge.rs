@@ -27,20 +27,14 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_init(
         .with_env_filter("xrouter=info,xrouter_ffi=info")
         .try_init();
 
-    let path: Option<String> = if config_path.is_null() {
-        None
-    } else {
-        match env.get_string(&config_path) {
-            Ok(s) => {
-                let s: String = s.into();
-                if s.is_empty() { None } else { Some(s) }
-            }
-            Err(e) => {
-                let _ = env.throw_new("java/lang/RuntimeException", format!("Invalid config path: {}", e));
-                return 0;
-            }
-        }
+    // JString from JNI is a wrapper — use .is_null() to check the Java null,
+    // then use get_or_opt_string to safely extract (returns None for null).
+    let path: Option<String> = match env.get_or_opt_string(&config_path) {
+        Ok(opt_str) => opt_str.map(|s| s.into()),
+        Err(_) => None,
     };
+    // Normalize empty string to None
+    let path = path.filter(|s| !s.is_empty());
 
     match config::load_or_create_config(path.as_deref()) {
         Ok(cfg) => {
@@ -69,12 +63,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getAddress(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let runtime = match state::get_runtime() {
-        Some(r) => r,
-        None => return std::ptr::null_mut(),
-    };
-
-    let info = match runtime.block_on(state::get_server_info()) {
+    let info = match state::get_server_info_sync() {
         Some(info) => info,
         None => return std::ptr::null_mut(),
     };
@@ -87,20 +76,13 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getAddress(
 }
 
 /// JNI: NativeBridge.isRunning() -> Boolean
+/// Returns true only if the server state is initialized AND the TCP port is bound.
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_isRunning(
     _env: JNIEnv,
     _class: JClass,
 ) -> jboolean {
-    let runtime = match state::get_runtime() {
-        Some(r) => r,
-        None => return 0,
-    };
-
-    match runtime.block_on(server::is_running()) {
-        true => 1,
-        false => 0,
-    }
+    if server::is_running() { 1 } else { 0 }
 }
 
 /// JNI: NativeBridge.getConfigJson() -> String?
@@ -218,14 +200,9 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getListenHost(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let host = if let Some(runtime) = state::get_runtime() {
-        if let Some(info) = runtime.block_on(state::get_server_info()) {
-            info.host
-        } else {
-            config::load_server_config().host
-        }
-    } else {
-        config::load_server_config().host
+    let host = match state::get_server_info_sync() {
+        Some(info) => info.host,
+        None => config::load_server_config().host,
     };
 
     match env.new_string(&host) {
@@ -241,12 +218,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getServerUrl(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let runtime = match state::get_runtime() {
-        Some(r) => r,
-        None => return std::ptr::null_mut(),
-    };
-
-    let info = match runtime.block_on(state::get_server_info()) {
+    let info = match state::get_server_info_sync() {
         Some(info) => info,
         None => return std::ptr::null_mut(),
     };
