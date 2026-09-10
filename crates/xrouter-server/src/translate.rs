@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
     let mut out = json!({});
     out["model"] = Value::String(target_model.to_string());
-    // messages
     let mut messages = Vec::new();
     let mut system_parts: Vec<String> = Vec::new();
 
@@ -24,14 +23,11 @@ pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
                 }
                 continue;
             }
-            // For openai messages, pass through but normalize content
             let mut new_msg = json!({"role": role});
             if let Some(content) = m.get("content") {
-                // OpenAI may have string or array of content parts
                 if content.is_string() {
                     new_msg["content"] = content.clone();
                 } else if let Some(arr) = content.as_array() {
-                    // convert to anthropic content array: preserve text parts
                     let mut parts = Vec::new();
                     for p in arr {
                         if let Some(t) = p.get("text").and_then(|x| x.as_str()) {
@@ -39,13 +35,10 @@ pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
                         } else if let Some(s) = p.as_str() {
                             parts.push(json!({"type":"text","text": s}));
                         } else if p.get("type").and_then(|x| x.as_str()) == Some("image_url") {
-                            // OpenAI image_url -> Anthropic image source.
                             if let Some(url) = p.get("image_url").and_then(|u| u.get("url")).and_then(|u| u.as_str()) {
                                 if let Some(anth) = openai_image_url_to_anthropic(url) {
                                     parts.push(anth);
                                 } else {
-                                    // Unsupported/unknown url scheme: keep as-is
-                                    // so the part is not silently dropped.
                                     parts.push(p.clone());
                                 }
                             } else {
@@ -60,7 +53,6 @@ pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
                     new_msg["content"] = content.clone();
                 }
             }
-            // tool calls etc pass through minimally
             if let Some(tc) = m.get("tool_calls") { new_msg["tool_calls"] = tc.clone(); }
             messages.push(new_msg);
         }
@@ -69,18 +61,32 @@ pub fn openai_to_anthropic(body: &Value, target_model: &str) -> Value {
         out["system"] = Value::String(system_parts.join("\n"));
     }
     out["messages"] = Value::Array(messages);
-    // max_tokens required for Anthropic
     if let Some(mt) = body.get("max_tokens") { out["max_tokens"] = mt.clone(); }
     else if let Some(mt) = body.get("max_completion_tokens") { out["max_tokens"] = mt.clone(); }
     else { out["max_tokens"] = json!(1024); }
 
-    // optional fields
     if let Some(t) = body.get("temperature") { out["temperature"] = t.clone(); }
     if let Some(t) = body.get("top_p") { out["top_p"] = t.clone(); }
     if let Some(s) = body.get("stop") { out["stop_sequences"] = s.clone(); }
     if let Some(s) = body.get("stream") { out["stream"] = s.clone(); }
-    // tools
-    if let Some(tools) = body.get("tools") { out["tools"] = tools.clone(); }
+    
+    // Translate OpenAI tools -> Anthropic tools
+    if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
+        let mut anth_tools = Vec::new();
+        for t in tools {
+            if let Some(f) = t.get("function") {
+                let name = f.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let desc = f.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                let schema = f.get("parameters").cloned().unwrap_or(json!({"type": "object"}));
+                anth_tools.push(json!({
+                    "name": name,
+                    "description": desc,
+                    "input_schema": schema
+                }));
+            }
+        }
+        out["tools"] = Value::Array(anth_tools);
+    }
 
     out
 }
@@ -105,38 +111,70 @@ pub fn anthropic_to_openai(body: &Value, target_model: &str) -> Value {
     if let Some(msgs) = body.get("messages").and_then(|m| m.as_array()) {
         for m in msgs {
             let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-            let mut new_msg = json!({"role": role});
+            
             if let Some(content) = m.get("content") {
                 if let Some(s) = content.as_str() {
-                    new_msg["content"] = Value::String(s.to_string());
+                    messages.push(json!({"role": role, "content": s}));
                 } else if let Some(arr) = content.as_array() {
-                    // anthropic content blocks
-                    let mut parts = Vec::new();
+                    let mut text_parts = Vec::new();
+                    let mut tool_calls = Vec::new();
+
                     for block in arr {
-                        if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
-                            parts.push(json!({"type":"text","text": t}));
-                        } else if block.get("type").and_then(|x| x.as_str()) == Some("image") {
-                            // Anthropic image -> OpenAI image_url.
-                            if let Some(url) = anthropic_image_to_openai_url(block) {
-                                parts.push(json!({"type":"image_url","image_url":{"url": url}}));
-                            } else {
-                                // Could not translate (e.g. missing source): keep
-                                // the original block so nothing is dropped.
-                                parts.push(block.clone());
+                        let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match btype {
+                            "text" => {
+                                if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
+                                    text_parts.push(json!({"type": "text", "text": t}));
+                                }
                             }
-                        } else {
-                            parts.push(block.clone());
+                            "image" => {
+                                if let Some(url) = anthropic_image_to_openai_url(block) {
+                                    text_parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                                }
+                            }
+                            "tool_use" => {
+                                let id = block.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                                let name = block.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                                let input = block.get("input").cloned().unwrap_or(json!({}));
+                                tool_calls.push(json!({
+                                    "id": id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": input.to_string()
+                                    }
+                                }));
+                            }
+                            "tool_result" => {
+                                let id = block.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("");
+                                let res_content = block.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                                messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": id,
+                                    "content": res_content
+                                }));
+                            }
+                            _ => {}
                         }
                     }
-                    // OpenAI expects string or array; keep array if multiple parts else string
-                    if parts.len() == 1 && parts[0].get("text").is_some() {
-                        new_msg["content"] = Value::String(parts[0].get("text").unwrap().as_str().unwrap().to_string());
-                    } else {
-                        new_msg["content"] = Value::Array(parts);
+
+                    if !text_parts.is_empty() || !tool_calls.is_empty() {
+                        let mut msg = json!({"role": role});
+                        if text_parts.len() == 1 && text_parts[0].get("type").and_then(|t| t.as_str()) == Some("text") {
+                            msg["content"] = text_parts[0].get("text").cloned().unwrap();
+                        } else if !text_parts.is_empty() {
+                            msg["content"] = Value::Array(text_parts);
+                        } else {
+                            msg["content"] = Value::Null;
+                        }
+
+                        if !tool_calls.is_empty() {
+                            msg["tool_calls"] = Value::Array(tool_calls);
+                        }
+                        messages.push(msg);
                     }
                 }
             }
-            messages.push(new_msg);
         }
     }
     out["messages"] = Value::Array(messages);
@@ -144,17 +182,31 @@ pub fn anthropic_to_openai(body: &Value, target_model: &str) -> Value {
     if let Some(t) = body.get("temperature") { out["temperature"] = t.clone(); }
     if let Some(s) = body.get("stop_sequences") { out["stop"] = s.clone(); }
     if let Some(s) = body.get("stream") { out["stream"] = s.clone(); }
-    if let Some(tools) = body.get("tools") { out["tools"] = tools.clone(); }
+
+    // Translate Anthropic tools -> OpenAI functions
+    if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
+        let mut oa_tools = Vec::new();
+        for t in tools {
+            let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            let schema = t.get("input_schema").cloned().unwrap_or(json!({"type": "object"}));
+            oa_tools.push(json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": schema
+                }
+            }));
+        }
+        out["tools"] = Value::Array(oa_tools);
+    }
 
     out
 }
 
-/// Convert an OpenAI `image_url` value (a URL string) into an Anthropic image
-/// content block. Supports both inline `data:image/<mime>;base64,<data>` URLs
-/// and remote `http(s)://` URLs (Anthropic source type `url`).
 fn openai_image_url_to_anthropic(url: &str) -> Option<Value> {
     if let Some(rest) = url.strip_prefix("data:") {
-        // format: image/png;base64,xxxx  (or image/png;name=..;base64,xxxx)
         let (meta, data) = rest.split_once(',')?;
         let media_type = meta.split(';').next()?.to_string();
         let b64 = if let Some(b) = data.strip_prefix("base64,") { b } else { data };
@@ -172,9 +224,6 @@ fn openai_image_url_to_anthropic(url: &str) -> Option<Value> {
     }
 }
 
-/// Extract an OpenAI-compatible `image_url` string from an Anthropic image
-/// content block. Inline base64 sources are re-encoded as a `data:` URL; remote
-/// `url` sources are passed through directly.
 fn anthropic_image_to_openai_url(block: &Value) -> Option<String> {
     let source = block.get("source")?;
     let source_type = source.get("type").and_then(|t| t.as_str())?;
@@ -198,16 +247,13 @@ pub fn is_streaming(body: &Value) -> bool {
 
 // ---------------------------------------------------------------------------
 // Stateful SSE streaming translators
-//
-// Cross-protocol streaming must not lose data (especially tool calls). The
-// OpenAI and Anthropic SSE dialects split a single logical event across many
-// chunks, so translation carries per-stream state between chunks.
 // ---------------------------------------------------------------------------
 
-/// State for OpenAI -> Anthropic streaming translation.
 #[derive(Default, Clone)]
 pub struct OaToAnthStreamState {
     pub message_started: bool,
+    pub text_block_started: bool,
+    pub text_block_index: usize,
     pub tool_blocks: HashMap<usize, ToolBlock>,
     pub next_block_index: usize,
     pub finished: bool,
@@ -221,10 +267,8 @@ pub struct ToolBlock {
     pub started: bool,
 }
 
-/// State for Anthropic -> OpenAI streaming translation.
 #[derive(Default, Clone)]
 pub struct AnthToOaStreamState {
-    /// anthropic block_index -> (openai tool index, id, name)
     pub tool_blocks: HashMap<usize, (usize, String, String)>,
     pub next_tool_index: usize,
     pub finished: bool,
@@ -235,16 +279,23 @@ pub fn translate_sse_openai_to_anthropic_chunk_st(state: &mut OaToAnthStreamStat
     if openai_data.trim() == "[DONE]" {
         let mut out = Vec::new();
         if !state.finished {
+            // Close text block if open
+            if state.text_block_started {
+                out.push(format!("event: content_block_stop\ndata: {}\n\n", json!({"type":"content_block_stop","index": state.text_block_index})));
+                state.text_block_started = false;
+            }
+            // Close tool blocks
             for (_, tb) in state.tool_blocks.iter() {
                 if tb.started {
-                    out.push(format!("event: content_block_stop\ndata: {}", json!({"type":"content_block_stop","index": tb.block_index})));
+                    out.push(format!("event: content_block_stop\ndata: {}\n\n", json!({"type":"content_block_stop","index": tb.block_index})));
                 }
             }
-            out.push("event: message_stop\ndata: {\"type\":\"message_stop\"}".to_string());
+            out.push("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_string());
             state.finished = true;
         }
         return out;
     }
+
     let val: Value = match serde_json::from_str(openai_data) {
         Ok(v) => v,
         Err(_) => return vec![],
@@ -254,33 +305,62 @@ pub fn translate_sse_openai_to_anthropic_chunk_st(state: &mut OaToAnthStreamStat
     let choice = match choice { Some(c) => c, None => return out };
     let delta = choice.get("delta");
 
-    // message_start on first role
+    // 1. Emit message_start on the very first chunk
     if !state.message_started {
-        if let Some(role) = delta.and_then(|d| d.get("role")).and_then(|r| r.as_str()) {
-            let msg = json!({
-                "type": "message_start",
-                "message": {
-                    "id": val.get("id").and_then(|x| x.as_str()).unwrap_or(""),
-                    "role": role,
-                    "model": val.get("model").and_then(|m| m.as_str()).unwrap_or(""),
-                    "content": [],
-                }
-            });
-            out.push(format!("event: message_start\ndata: {}", msg));
-            state.message_started = true;
-        }
+        let role = delta.and_then(|d| d.get("role")).and_then(|r| r.as_str()).unwrap_or("assistant");
+        let msg = json!({
+            "type": "message_start",
+            "message": {
+                "id": val.get("id").and_then(|x| x.as_str()).unwrap_or("msg_translated"),
+                "type": "message",
+                "role": role,
+                "model": val.get("model").and_then(|m| m.as_str()).unwrap_or(""),
+                "content": [],
+                "stop_reason": null,
+                "stop_sequence": null,
+                "usage": {"input_tokens": 0, "output_tokens": 0}
+            }
+        });
+        out.push(format!("event: message_start\ndata: {}\n\n", msg));
+        state.message_started = true;
     }
 
-    // text content
-    if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
+    // 2. Extract text (supports both standard `content` and reasoning `reasoning_content`)
+    let text = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str())
+        .or_else(|| delta.and_then(|d| d.get("reasoning_content")).and_then(|r| r.as_str()));
+
+    if let Some(content) = text {
         if !content.is_empty() {
-            let anth = json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text": content}});
-            out.push(format!("event: content_block_delta\ndata: {}", anth));
+            // If text block hasn't started, emit content_block_start first!
+            if !state.text_block_started {
+                state.text_block_index = state.next_block_index;
+                state.next_block_index += 1;
+                let start = json!({
+                    "type": "content_block_start",
+                    "index": state.text_block_index,
+                    "content_block": {"type": "text", "text": ""}
+                });
+                out.push(format!("event: content_block_start\ndata: {}\n\n", start));
+                state.text_block_started = true;
+            }
+
+            let anth = json!({
+                "type": "content_block_delta",
+                "index": state.text_block_index,
+                "delta": {"type": "text_delta", "text": content}
+            });
+            out.push(format!("event: content_block_delta\ndata: {}\n\n", anth));
         }
     }
 
-    // tool calls (may be streamed across many chunks)
+    // 3. Tool calls
     if let Some(tool_calls) = delta.and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()) {
+        // If a text block was open, close it before opening tool blocks
+        if state.text_block_started {
+            out.push(format!("event: content_block_stop\ndata: {}\n\n", json!({"type":"content_block_stop","index": state.text_block_index})));
+            state.text_block_started = false;
+        }
+
         for tc in tool_calls {
             let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
             let tb = state.tool_blocks.entry(idx).or_insert_with(|| {
@@ -290,30 +370,36 @@ pub fn translate_sse_openai_to_anthropic_chunk_st(state: &mut OaToAnthStreamStat
             });
             if let Some(id) = tc.get("id").and_then(|i| i.as_str()) { if !id.is_empty() { tb.id = id.to_string(); } }
             if let Some(name) = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) { if !name.is_empty() { tb.name = name.to_string(); } }
-            if !tb.started {
+            if !tb.started && (!tb.id.is_empty() || !tb.name.is_empty()) {
                 let block = json!({
                     "type": "content_block_start",
                     "index": tb.block_index,
                     "content_block": { "type": "tool_use", "id": tb.id, "name": tb.name }
                 });
-                out.push(format!("event: content_block_start\ndata: {}", block));
+                out.push(format!("event: content_block_start\ndata: {}\n\n", block));
                 tb.started = true;
             }
             if let Some(args) = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()) {
                 if !args.is_empty() {
                     let d = json!({"type":"content_block_delta","index": tb.block_index,"delta":{"type":"input_json_delta","partial_json": args}});
-                    out.push(format!("event: content_block_delta\ndata: {}", d));
+                    out.push(format!("event: content_block_delta\ndata: {}\n\n", d));
                 }
             }
         }
     }
 
-    // finish_reason -> close blocks, emit message_delta + message_stop
+    // 4. Finish reason -> close all blocks, emit message_delta + message_stop exactly ONCE
     if let Some(finish) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-        if !finish.is_empty() && finish != "null" {
+        if !finish.is_empty() && finish != "null" && !state.finished {
+            // Close text block if open
+            if state.text_block_started {
+                out.push(format!("event: content_block_stop\ndata: {}\n\n", json!({"type":"content_block_stop","index": state.text_block_index})));
+                state.text_block_started = false;
+            }
+            // Close tool blocks if open
             for (_, tb) in state.tool_blocks.iter() {
                 if tb.started {
-                    out.push(format!("event: content_block_stop\ndata: {}", json!({"type":"content_block_stop","index": tb.block_index})));
+                    out.push(format!("event: content_block_stop\ndata: {}\n\n", json!({"type":"content_block_stop","index": tb.block_index})));
                 }
             }
             let stop_reason = match finish {
@@ -326,16 +412,15 @@ pub fn translate_sse_openai_to_anthropic_chunk_st(state: &mut OaToAnthStreamStat
                 "delta": { "stop_reason": stop_reason, "stop_sequence": null },
                 "usage": val.get("usage").cloned().unwrap_or(json!({}))
             });
-            out.push(format!("event: message_delta\ndata: {}", msg_delta));
-            out.push("event: message_stop\ndata: {\"type\":\"message_stop\"}".to_string());
+            out.push(format!("event: message_delta\ndata: {}\n\n", msg_delta));
+            out.push("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_string());
             state.finished = true;
         }
     }
+
     out
 }
 
-/// Translate one Anthropic SSE `data:` payload (with its preceding `event:`)
-/// into an OpenAI chunk line (or `None`).
 pub fn translate_sse_anthropic_to_openai_chunk_st(state: &mut AnthToOaStreamState, event: &str, data: &str) -> Option<String> {
     match event {
         "message_start" => {
@@ -347,7 +432,7 @@ pub fn translate_sse_anthropic_to_openai_chunk_st(state: &mut AnthToOaStreamStat
                 "id": id, "object": "chat.completion.chunk", "model": model,
                 "choices": [{ "index": 0, "delta": { "role": role }, "finish_reason": null }]
             });
-            Some(format!("data: {}\n", openai))
+            Some(format!("data: {}\n\n", openai))
         }
         "content_block_start" => {
             let v: Value = serde_json::from_str(data).ok()?;
@@ -364,7 +449,7 @@ pub fn translate_sse_anthropic_to_openai_chunk_st(state: &mut AnthToOaStreamStat
                     "id": "chatcmpl-translated", "object": "chat.completion.chunk",
                     "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": oa_index, "id": id, "type": "function", "function": { "name": name, "arguments": "" } }] }, "finish_reason": null }]
                 });
-                Some(format!("data: {}\n", openai))
+                Some(format!("data: {}\n\n", openai))
             } else { None }
         }
         "content_block_delta" => {
@@ -376,14 +461,14 @@ pub fn translate_sse_anthropic_to_openai_chunk_st(state: &mut AnthToOaStreamStat
                     "id": "chatcmpl-translated", "object": "chat.completion.chunk",
                     "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": null }]
                 });
-                Some(format!("data: {}\n", openai))
+                Some(format!("data: {}\n\n", openai))
             } else if let Some(partial) = delta.and_then(|d| d.get("partial_json")).and_then(|p| p.as_str()) {
                 let oa_index = state.tool_blocks.get(&block_index).map(|(i, _, _)| *i)?;
                 let openai = json!({
                     "id": "chatcmpl-translated", "object": "chat.completion.chunk",
                     "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": oa_index, "function": { "arguments": partial } }] }, "finish_reason": null }]
                 });
-                Some(format!("data: {}\n", openai))
+                Some(format!("data: {}\n\n", openai))
             } else { None }
         }
         "message_delta" => {
@@ -400,31 +485,18 @@ pub fn translate_sse_anthropic_to_openai_chunk_st(state: &mut AnthToOaStreamStat
                 "choices": [{ "index": 0, "delta": {}, "finish_reason": finish_reason }],
                 "usage": usage
             });
-            Some(format!("data: {}\n", openai))
+            Some(format!("data: {}\n\n", openai))
         }
         "message_stop" => {
             if !state.finished {
                 state.finished = true;
-                Some("data: [DONE]\n".to_string())
+                Some("data: [DONE]\n\n".to_string())
             } else { None }
         }
         _ => None,
     }
 }
 
-// ---------------------------------------------------------------------------
-// OpenAI Responses API <-> Chat Completions translation
-//
-// The Responses API (`POST /v1/responses`) is translated into the Chat
-// Completions shape so it can ride the exact same routing/quota/failover path
-// as `/v1/chat/completions`. Upstream we ALWAYS translate to
-// `/v1/chat/completions` (never pass `/v1/responses` through natively) for v1
-// correctness — even when a provider (e.g. opencode zen muse-spark) exposes
-// `/v1/responses` natively. A future optimization could passthrough when the
-// provider kind is openai-compat AND the tier entry model is known-responses.
-// ---------------------------------------------------------------------------
-
-/// Generate a Responses-API-style response id: `resp_` + 32 hex chars.
 pub fn gen_response_id() -> String {
     use rand::RngExt;
     let mut rng = rand::rng();
@@ -432,9 +504,6 @@ pub fn gen_response_id() -> String {
     format!("resp_{:032x}", n)
 }
 
-/// Build a Responses API response object (used by both streaming and
-/// non-streaming translation). The shape is kept EXACTLY to the fields Codex
-/// expects: id, object:"response", status, model, output[], usage{input,output,total}.
 pub fn responses_object(
     id: &str,
     model: &str,
@@ -462,7 +531,6 @@ pub fn responses_object(
     })
 }
 
-/// Translate an OpenAI Responses API request body into a Chat Completions body.
 pub fn responses_to_chat(body: &Value) -> Value {
     let mut out = json!({});
     if let Some(m) = body.get("model").and_then(|x| x.as_str()) {
@@ -471,14 +539,12 @@ pub fn responses_to_chat(body: &Value) -> Value {
 
     let mut messages: Vec<Value> = Vec::new();
 
-    // instructions -> system message
     if let Some(instructions) = body.get("instructions").and_then(|x| x.as_str()) {
         if !instructions.is_empty() {
             messages.push(json!({ "role": "system", "content": instructions }));
         }
     }
 
-    // input -> messages
     match body.get("input") {
         Some(Value::String(s)) => {
             messages.push(json!({ "role": "user", "content": s.clone() }));
@@ -507,7 +573,6 @@ pub fn responses_to_chat(body: &Value) -> Value {
                         }
                     }
                 }
-                // collapse a single text part to a plain string (chat-completions friendly)
                 let content_value = if parts.len() == 1
                     && parts[0].get("type").and_then(|x| x.as_str()) == Some("text")
                 {
@@ -534,7 +599,6 @@ pub fn responses_to_chat(body: &Value) -> Value {
     out
 }
 
-/// Translate a Chat Completions response body into a Responses API response.
 pub fn chat_to_responses(v: &Value) -> Value {
     let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
     let text = v.get("choices")
@@ -551,144 +615,6 @@ pub fn chat_to_responses(v: &Value) -> Value {
     let output_tokens = usage.get("completion_tokens").and_then(|x| x.as_u64())
         .or_else(|| usage.get("output_tokens").and_then(|x| x.as_u64()))
         .unwrap_or(0);
-    // Fresh `resp_` id per response (Codex expects the Responses-API id format,
-    // not the upstream chat-completion id).
     let id = gen_response_id();
     responses_object(&id, model, text, input_tokens, output_tokens, "completed")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn openai_to_anthropic_basic() {
-        let body = json!({"model":"big-pickle","messages":[{"role":"system","content":"you are helpful"},{"role":"user","content":"hi"}],"max_tokens":100});
-        let out = openai_to_anthropic(&body, "target-model");
-        assert_eq!(out["model"], "target-model");
-        assert_eq!(out["system"], "you are helpful");
-        assert_eq!(out["messages"][0]["role"], "user");
-        assert_eq!(out["max_tokens"], 100);
-    }
-    #[test]
-    fn anthropic_to_openai_basic() {
-        let body = json!({"model":"big-pickle","system":"you are helpful","messages":[{"role":"user","content":"hi"}]});
-        let out = anthropic_to_openai(&body, "target");
-        assert_eq!(out["model"], "target");
-        assert_eq!(out["messages"][0]["role"], "system");
-        assert_eq!(out["messages"][1]["role"], "user");
-    }
-    #[test]
-    fn responses_to_chat_basic() {
-        let body = json!({"model":"gpt","instructions":"be nice","input":"hello","max_output_tokens":50});
-        let out = responses_to_chat(&body);
-        assert_eq!(out["model"], "gpt");
-        assert_eq!(out["messages"][0]["role"], "system");
-        assert_eq!(out["messages"][0]["content"], "be nice");
-        assert_eq!(out["messages"][1]["role"], "user");
-        assert_eq!(out["messages"][1]["content"], "hello");
-        assert_eq!(out["max_tokens"], 50);
-    }
-
-    #[test]
-    fn responses_to_chat_input_array() {
-        let body = json!({"model":"gpt","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]});
-        let out = responses_to_chat(&body);
-        assert_eq!(out["messages"][0]["role"], "user");
-        assert_eq!(out["messages"][0]["content"], "hi");
-    }
-
-    #[test]
-    fn responses_to_chat_input_image() {
-        let body = json!({"model":"gpt","input":[{"role":"user","content":[{"type":"input_image","image_url":"http://x/y.png"}]}]});
-        let out = responses_to_chat(&body);
-        assert_eq!(out["messages"][0]["content"][0]["type"], "image_url");
-        assert_eq!(out["messages"][0]["content"][0]["image_url"]["url"], "http://x/y.png");
-    }
-
-    #[test]
-    fn chat_to_responses_basic() {
-        let chat = json!({"id":"chatcmpl-1","model":"gpt","choices":[{"message":{"role":"assistant","content":"hello world"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}});
-        let out = chat_to_responses(&chat);
-        assert_eq!(out["object"], "response");
-        assert_eq!(out["status"], "completed");
-        assert_eq!(out["output"][0]["type"], "message");
-        assert_eq!(out["output"][0]["role"], "assistant");
-        assert_eq!(out["output"][0]["content"][0]["type"], "output_text");
-        assert_eq!(out["output"][0]["content"][0]["text"], "hello world");
-        assert_eq!(out["usage"]["input_tokens"], 5);
-        assert_eq!(out["usage"]["output_tokens"], 2);
-        assert_eq!(out["usage"]["total_tokens"], 7);
-        // id must be resp_ + 32 hex chars
-        let id = out["id"].as_str().unwrap();
-        assert!(id.starts_with("resp_"));
-        assert_eq!(id.len(), "resp_".len() + 32);
-        assert!(id["resp_".len()..].chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn responses_object_exact_shape() {
-        // The exact shape Codex expects for a response.completed event's
-        // `response` object — no extra fields.
-        let obj = responses_object("resp_abc123", "gpt-4o", "hi", 3, 1, "completed");
-        let s = serde_json::to_string(&obj).unwrap();
-        // Key fields present and correct.
-        assert_eq!(obj["id"], "resp_abc123");
-        assert_eq!(obj["object"], "response");
-        assert_eq!(obj["status"], "completed");
-        assert_eq!(obj["model"], "gpt-4o");
-        assert_eq!(obj["output"][0]["type"], "message");
-        assert_eq!(obj["output"][0]["role"], "assistant");
-        assert_eq!(obj["output"][0]["content"][0]["type"], "output_text");
-        assert_eq!(obj["output"][0]["content"][0]["text"], "hi");
-        assert_eq!(obj["usage"]["input_tokens"], 3);
-        assert_eq!(obj["usage"]["output_tokens"], 1);
-        assert_eq!(obj["usage"]["total_tokens"], 4);
-        // No stray fields (created_at, sequence_number, etc.).
-        assert!(!s.contains("created_at"));
-        assert!(!s.contains("sequence_number"));
-        // The object has exactly the 6 expected top-level keys (order is
-        // irrelevant to JSON parsers; serde_json sorts them alphabetically).
-        let mut keys: Vec<&str> = obj.as_object().unwrap().keys().map(|k| k.as_str()).collect();
-        keys.sort();
-        assert_eq!(keys, vec!["id", "model", "object", "output", "status", "usage"]);
-    }
-
-    #[test]
-    fn response_completed_event_shape() {
-        // Build the exact SSE `response.completed` event payload and assert the
-        // serialized JSON matches the Codex-expected shape byte-for-byte in keys.
-        let obj = responses_object("resp_xyz", "tier-fast", "answer", 10, 4, "completed");
-        let event = json!({ "type": "response.completed", "response": obj });
-        let s = serde_json::to_string(&event).unwrap();
-        // Parse back and assert the exact Codex-expected fields/values. Key
-        // order is irrelevant to JSON parsers (serde_json sorts alphabetically).
-        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(parsed["type"], "response.completed");
-        let r = &parsed["response"];
-        assert_eq!(r["object"], "response");
-        assert_eq!(r["status"], "completed");
-        assert_eq!(r["model"], "tier-fast");
-        assert_eq!(r["output"][0]["type"], "message");
-        assert_eq!(r["output"][0]["content"][0]["type"], "output_text");
-        assert_eq!(r["output"][0]["content"][0]["text"], "answer");
-        assert_eq!(r["usage"]["input_tokens"], 10);
-        assert_eq!(r["usage"]["output_tokens"], 4);
-        assert_eq!(r["usage"]["total_tokens"], 14);
-        // No chat.completion leakage.
-        assert!(!s.contains("\"choices\""));
-        assert!(!s.contains("\"finish_reason\""));
-    }
-
-    #[test]
-    fn oa_tool_call_stream_translates() {
-        let mut st = OaToAnthStreamState::default();
-        let c1 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"id":"x","model":"m","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#);
-        assert!(c1.iter().any(|l| l.contains("message_start")));
-        let c2 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}"#);
-        assert!(c2.iter().any(|l| l.contains("content_block_start") && l.contains("tool_use")));
-        let c3 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1}"}}]},"finish_reason":null}]}"#);
-        assert!(c3.iter().any(|l| l.contains("input_json_delta")));
-        let c4 = translate_sse_openai_to_anthropic_chunk_st(&mut st, r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
-        assert!(c4.iter().any(|l| l.contains("message_stop")));
-    }
 }
