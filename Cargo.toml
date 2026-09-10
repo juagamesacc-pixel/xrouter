@@ -8,7 +8,7 @@ members = [
     "crates/xrouter-cli",
     "crates/xrouter-auth",
     "crates/xrouter-wizard",
-    "../xrouter-ffi",
+    "xrouter-ffi",
 ]
 resolver = "2"
 
