@@ -295,6 +295,59 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_restartServer(
     }
 }
 
+/// JNI: NativeBridge.saveServerConfig(host: String, port: Int) -> Boolean
+/// Save the server binding configuration (host and port).
+#[no_mangle]
+pub extern "system" fn Java_com_xrouter_app_NativeBridge_saveServerConfig(
+    mut env: JNIEnv,
+    _class: JClass,
+    host: JString,
+    port: jint,
+) -> jboolean {
+    let host_str: String = if host.is_null() {
+        "127.0.0.1".to_string()
+    } else {
+        match env.get_string(&host) {
+            Ok(s) => s.into(),
+            Err(_) => "127.0.0.1".to_string(),
+        }
+    };
+
+    let cfg = config::ServerConfig {
+        host: host_str,
+        port: port as u16,
+    };
+
+    match config::save_server_config(&cfg) {
+        Ok(()) => {
+            tracing::info!("JNI: Server config saved: {}:{}", cfg.host, cfg.port);
+            1
+        }
+        Err(e) => {
+            tracing::error!("JNI: Failed to save server config: {}", e);
+            0
+        }
+    }
+}
+
+/// JNI: NativeBridge.loadServerConfig() -> String?
+/// Load the server binding config as JSON string {"host":"...","port":...}.
+#[no_mangle]
+pub extern "system" fn Java_com_xrouter_app_NativeBridge_loadServerConfig(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let cfg = config::load_server_config();
+    let json = match serde_json::to_string(&cfg) {
+        Ok(j) => j,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match env.new_string(&json) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// JNI: NativeBridge.getLastErrorMessage() -> String?
 /// Returns the last error message from server startup or operation failures.
 /// The error is cleared after being read (consume-once pattern).
