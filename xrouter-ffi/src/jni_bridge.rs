@@ -19,7 +19,7 @@ use crate::state;
 /// JNI: NativeBridge.init(configPath: String?) -> Boolean
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_init(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     config_path: JString,
 ) -> jboolean {
@@ -66,7 +66,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_init(
 /// JNI: NativeBridge.getAddress() -> String?
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_getAddress(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let runtime = match state::get_runtime() {
@@ -97,7 +97,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_isRunning(
         None => return 0,
     };
 
-    match runtime.block_on(state::is_running()) {
+    match runtime.block_on(server::is_running()) {
         true => 1,
         false => 0,
     }
@@ -107,7 +107,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_isRunning(
 /// Get the current configuration as a JSON string.
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_getConfigJson(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let runtime = match state::get_runtime() {
@@ -142,7 +142,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getConfigJson(
 /// Update configuration from a JSON string (hot reload).
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_updateConfig(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     config_json: JString,
 ) -> jboolean {
@@ -215,7 +215,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getServerPort(
 /// Get the configured listen host.
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_getListenHost(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let host = if let Some(runtime) = state::get_runtime() {
@@ -238,7 +238,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getListenHost(
 /// Get the full server URL (e.g., "http://127.0.0.1:3001") for other apps to use.
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_getServerUrl(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let runtime = match state::get_runtime() {
@@ -264,7 +264,7 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_getServerUrl(
 /// when it's bound to 0.0.0.0.
 #[no_mangle]
 pub extern "system" fn Java_com_xrouter_app_NativeBridge_getDeviceIp(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     // UDP "connect" to a public address determines which local interface would be used.

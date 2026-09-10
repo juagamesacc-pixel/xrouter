@@ -21,7 +21,7 @@ pub struct ServerInfo {
 static SERVER_INFO: OnceCell<RwLock<Option<ServerInfo>>> = OnceCell::new();
 
 pub fn init_global_state() -> Arc<RwLock<Option<AppState>>> {
-    GLOBAL_STATE.get_or_init(|| Arc::new(RwLock::new(None)))
+    GLOBAL_STATE.get_or_init(|| Arc::new(RwLock::new(None))).clone()
 }
 
 pub fn get_global_state() -> Option<Arc<RwLock<Option<AppState>>>> {

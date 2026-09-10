@@ -76,12 +76,12 @@ pub fn load_or_create_config(path: Option<&str>) -> Result<Config> {
 
     if config_path.exists() {
         tracing::info!("Loading config from: {:?}", config_path);
-        Config::load_from(&config_path)
+        xrouter_config::load_from(&config_path)
             .with_context(|| format!("Failed to load config from {:?}", config_path))
     } else {
         tracing::info!("No config found, creating default at: {:?}", config_path);
         create_default_config(&config_path)?;
-        Config::load_from(&config_path)
+        xrouter_config::load_from(&config_path)
             .with_context(|| format!("Failed to load newly created config at {:?}", config_path))
     }
 }

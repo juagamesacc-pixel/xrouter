@@ -1,12 +1,11 @@
 //! Server lifecycle management for FFI
 
 use anyhow::Result;
-use std::sync::Arc;
 use xrouter_config::Config;
-use xrouter_server::{AppState, create_router};
+use xrouter_server::AppState;
 use tracing::info;
 
-use crate::config::{self, ServerConfig};
+use crate::config;
 use crate::state::{self, ServerInfo};
 
 /// Initialize and start the xrouter server on a background tokio runtime.
@@ -30,7 +29,7 @@ pub fn start_server(config: Config, port: u16) -> Result<String> {
     // Spawn the server on the background runtime
     let server_addr = addr.clone();
     runtime.spawn(async move {
-        match run_server_inner(&server_addr, app_state).await {
+        match run_server_inner(server_addr, app_state).await {
             Ok(()) => info!("Server stopped gracefully"),
             Err(e) => tracing::error!("Server error: {}", e),
         }
@@ -52,44 +51,10 @@ pub fn start_server_with_persisted_config(config: Config) -> Result<String> {
     start_server(config, server_cfg.port)
 }
 
-/// Inner server run function (async)
-async fn run_server_inner(addr: &str, state: AppState) -> Result<()> {
-    // Refresh model cache
+/// Inner server run function (async) — uses xrouter_server::run_server
+async fn run_server_inner(addr: String, state: AppState) -> Result<()> {
     state.refresh_model_cache().await;
-
-    let app = create_router(state);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("xrouter listening on {}", addr);
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    Ok(())
-}
-
-/// Graceful shutdown signal handler
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sig) => { let _ = sig.recv().await; }
-            Err(_) => std::future::pending::<()>().await,
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
+    xrouter_server::run_server(addr, state).await
 }
 
 /// Shutdown the server and clean up resources
@@ -116,7 +81,7 @@ pub async fn is_running() -> bool {
 }
 
 /// Reload config (hot reload)
-pub fn reload_config(new_config: Config) -> Result<()> {
+pub fn reload_config(_new_config: Config) -> Result<()> {
     if let Some(runtime) = state::get_runtime() {
         runtime.block_on(async {
             if let Some(global_state) = state::get_global_state() {
