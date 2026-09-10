@@ -27,11 +27,14 @@ pub extern "system" fn Java_com_xrouter_app_NativeBridge_init(
         .with_env_filter("xrouter=info,xrouter_ffi=info")
         .try_init();
 
-    // JString from JNI is a wrapper — use .is_null() to check the Java null,
-    // then use get_or_opt_string to safely extract (returns None for null).
-    let path: Option<String> = match env.get_or_opt_string(&config_path) {
-        Ok(opt_str) => opt_str.map(|s| s.into()),
-        Err(_) => None,
+    // JString.is_null() returns true when Java passes null.
+    let path: Option<String> = if config_path.is_null() {
+        None
+    } else {
+        match env.get_string(&config_path) {
+            Ok(s) => Some(s.into()),
+            Err(_) => None,
+        }
     };
     // Normalize empty string to None
     let path = path.filter(|s| !s.is_empty());
