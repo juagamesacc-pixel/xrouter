@@ -37,15 +37,12 @@ jobs:
       - run: cargo binstall -y cargo-ndk
 
       - name: Build binary with Android NDK
-        # C-dependencies (ring, zstd-sys) require the Android NDK C-compiler.
-        # cargo-ndk handles exporting CC, AR, and CXX automatically.
-        # API 24 (Android 7.0) is the minimum baseline for modern Termux.
         env:
           RUSTFLAGS: "-C strip=symbols"
         run: >
           cargo ndk 
-          -t ${{ matrix.ndk_arch }} 
-          -p 24 
+          --target ${{ matrix.ndk_arch }} 
+          --platform 24 
           build --release --package xrouter-cli --bin xrouter
 
       - name: Upload Artifacts
