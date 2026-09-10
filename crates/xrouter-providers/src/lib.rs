@@ -64,13 +64,30 @@ impl OpenAiCompatAdapter {
     pub fn new(base_url: String, client: Client) -> Self { Self { base_url, client } }
 }
 
+fn opencode_session_id() -> String {
+    format!(
+        "session_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    )
+}
+
 #[async_trait]
 impl Provider for OpenAiCompatAdapter {
     async fn list_models(&self, key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
         let url = format!("{}/models", self.base_url.trim_end_matches('/'));
-        let resp = self.client.get(&url)
-            .header("Authorization", format!("Bearer {}", key.expose()))
-            .send().await?;
+        let mut req = self.client.get(&url)
+            .header("Authorization", format!("Bearer {}", key.expose()));
+
+        // OpenCode Zen requires an X-Session-ID header
+        if self.base_url.contains("opencode.ai") {
+            req = req.header("X-Session-ID", opencode_session_id());
+        }
+
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             let txt = resp
@@ -114,11 +131,18 @@ impl Provider for OpenAiCompatAdapter {
             .header("Authorization", format!("Bearer {}", ctx.api_key.expose()))
             .header("Content-Type", "application/json")
             .json(&ctx.body);
+
         // Signal SSE support when the caller wants a streamed response so
         // upstreams return `text/event-stream` instead of buffering.
         if ctx.stream {
             req = req.header("Accept", "text/event-stream");
         }
+
+        // OpenCode Zen free-tier models (big-pickle, mimo-v2.5-free) require an X-Session-ID
+        if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
+            req = req.header("X-Session-ID", opencode_session_id());
+        }
+
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
@@ -130,11 +154,16 @@ impl Provider for OpenAiCompatAdapter {
 
     async fn send_images(&self, ctx: &RequestCtx) -> anyhow::Result<UpstreamResponse> {
         let url = format!("{}/images/generations", self.base_url.trim_end_matches('/'));
-        let resp = self.client.post(&url)
+        let mut req = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", ctx.api_key.expose()))
             .header("Content-Type", "application/json")
-            .json(&ctx.body)
-            .send().await?;
+            .json(&ctx.body);
+
+        if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
+            req = req.header("X-Session-ID", opencode_session_id());
+        }
+
+        let resp = req.send().await?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         // Image responses are never streamed in this router.
@@ -157,21 +186,30 @@ impl AnthropicAdapter {
 #[async_trait]
 impl Provider for AnthropicAdapter {
     async fn list_models(&self, _key: &ApiKey) -> anyhow::Result<Vec<RawModel>> {
-        // Anthropic does not have list models endpoint; return empty
+        // Anthropic does not have a list models endpoint; return empty
         Ok(vec![])
     }
+
     async fn send(&self, ctx: &RequestCtx) -> anyhow::Result<UpstreamResponse> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let resp = self.client.post(&url)
+        let mut req = self.client.post(&url)
             .header("x-api-key", ctx.api_key.expose())
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
-            .json(&ctx.body)
-            .send().await?;
+            .json(&ctx.body);
+
+        // STRICT: Attach X-Session-ID ONLY if the upstream target is OpenCode.
+        // Official Anthropic (api.anthropic.com) and all other providers are strictly untouched.
+        if self.base_url.contains("opencode.ai") || ctx.provider == "opencode-zen" {
+            req = req.header("X-Session-ID", opencode_session_id());
+        }
+
+        let resp = req.send().await?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         Ok(UpstreamResponse { status, headers, is_stream: ctx.stream, response: resp })
     }
+
     fn protocol(&self) -> xrouter_core::Protocol { xrouter_core::Protocol::Anthropic }
     fn base_url(&self) -> &str { &self.base_url }
 }
