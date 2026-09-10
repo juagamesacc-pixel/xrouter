@@ -1,8 +1,11 @@
 //! Server lifecycle management for FFI
+//!
+//! Uses SO_LINGER(0) on the TCP socket so the port is released immediately
+//! when the server shuts down — critical on Android where TIME_WAIT can
+//! hold the port for 60+ seconds.
 
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use xrouter_config::Config;
 use xrouter_server::AppState;
 use tracing::info;
@@ -14,7 +17,6 @@ use crate::state::{self, ServerInfo};
 static SERVER_LISTENING: AtomicBool = AtomicBool::new(false);
 static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Set the last error message for diagnostic retrieval from JNI/JS
 fn set_last_error(msg: &str) {
     if let Ok(mut guard) = LAST_ERROR.lock() {
         *guard = Some(msg.to_string());
@@ -22,7 +24,6 @@ fn set_last_error(msg: &str) {
 }
 
 /// Initialize and start the xrouter server on a background tokio runtime.
-/// Returns the bound address (host:port) on success.
 pub fn start_server(config: Config, port: u16) -> Result<String> {
     let runtime = state::init_runtime();
     let server_cfg = config::load_server_config();
@@ -45,7 +46,7 @@ pub fn start_server(config: Config, port: u16) -> Result<String> {
         port,
     });
 
-    // Create shutdown channel — the server task watches this for exit signal
+    // Create shutdown channel
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     state::set_shutdown_sender(shutdown_tx);
 
@@ -53,16 +54,13 @@ pub fn start_server(config: Config, port: u16) -> Result<String> {
     let server_addr = addr.clone();
     runtime.spawn(async move {
         match run_server_inner(server_addr.clone(), app_state, shutdown_rx).await {
-            Ok(()) => {
-                info!("Server stopped gracefully");
-            }
+            Ok(()) => info!("Server stopped gracefully"),
             Err(e) => {
                 let msg = format!("Server error: {}", e);
                 tracing::error!("{}", msg);
                 set_last_error(&msg);
             }
         }
-        // Mark as not listening when server task ends (port unbound)
         SERVER_LISTENING.store(false, Ordering::SeqCst);
     });
 
@@ -70,14 +68,8 @@ pub fn start_server(config: Config, port: u16) -> Result<String> {
     Ok(addr)
 }
 
-/// Initialize with persisted server config
-pub fn start_server_with_persisted_config(config: Config) -> Result<String> {
-    let server_cfg = config::load_server_config();
-    start_server(config, server_cfg.port)
-}
-
-/// Inner server run function (async) — uses xrouter_server::run_server.
-/// Watches for shutdown signal via oneshot receiver.
+/// Inner server run — creates a TCP listener with SO_LINGER(0) so the port
+/// is released immediately on drop. Watches for shutdown via oneshot receiver.
 async fn run_server_inner(
     addr: String,
     state: AppState,
@@ -85,20 +77,40 @@ async fn run_server_inner(
 ) -> Result<()> {
     state.refresh_model_cache().await;
 
-    // Wrap the receiver so it implements Future (oneshot::Receiver doesn't by itself
-    // in some tokio versions — convert to a futures-compatible future)
+    // Use socket2 to set SO_LINGER(0) before binding.
+    // This forces an immediate TCP RST on close instead of TIME_WAIT,
+    // releasing the port instantly — essential on Android.
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::SocketAddr;
+
+    let socket_addr: SocketAddr = addr.parse()?;
+    let domain = if socket_addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_linger(Some(std::time::Duration::from_secs(0)))?;
+    socket.bind(&socket_addr.into())?;
+    socket.listen(128)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    std_listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+
+    SERVER_LISTENING.store(true, Ordering::SeqCst);
+    info!("Listening on {}", addr);
+
+    let app = xrouter_server::create_router(state);
+
     let shutdown_fut = async {
         let _ = shutdown_rx.await;
     };
 
-    // Mark as listening right before bind
-    SERVER_LISTENING.store(true, Ordering::SeqCst);
-
-    // Run the server and simultaneously watch for shutdown signal.
-    // When shutdown_fut completes, select drops the server future, which drops
-    // the TCP listener and releases the port immediately.
     tokio::select! {
-        result = xrouter_server::run_server(addr, state) => {
+        result = axum::serve(listener, app) => {
             result?;
         }
         _ = shutdown_fut => {
@@ -110,36 +122,30 @@ async fn run_server_inner(
 }
 
 /// Shutdown the server and release the TCP port.
-/// Sends the shutdown signal to the server task, which exits and drops the listener.
 pub fn shutdown_server() {
     SERVER_LISTENING.store(false, Ordering::SeqCst);
 
     // Signal the server task to exit (drops the TCP listener, releases the port)
     state::signal_shutdown();
 
-    // Drop the global state (AppState) so no new requests can arrive.
+    // Drop the global state so no new requests can arrive
     if let Some(global_state) = state::get_global_state() {
         if let Ok(mut guard) = global_state.try_write() {
             *guard = None;
         }
     }
 
-    // Clear server info so getAddress/etc return None.
     state::clear_server_info();
 
-    // Block briefly on the runtime to let the server task actually process the
-    // shutdown signal and drop the TCP listener. This is critical on Android
-    // where the server task runs on a background tokio runtime.
-    if let Some(runtime) = state::get_runtime() {
-        // Spawn a blocking task that waits for the server task to finish
+    // Block briefly to let the server task process the shutdown signal.
+    // With SO_LINGER(0), the port is released instantly when the listener drops.
+    if state::get_runtime().is_some() {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let _ = std::thread::spawn(move || {
-            // Give the server task up to 500ms to exit gracefully
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(200));
             let _ = done_tx.send(());
         });
-        // Block the calling thread until either the wait completes or timeout
-        let _ = done_rx.recv_timeout(std::time::Duration::from_millis(600));
+        let _ = done_rx.recv_timeout(std::time::Duration::from_millis(300));
     }
 
     info!("xrouter server shut down (port released)");
