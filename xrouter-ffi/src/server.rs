@@ -180,13 +180,25 @@ pub fn set_last_error_for_ui(msg: &str) {
 }
 
 /// Reload config (hot reload)
+/// Swaps the routing config + key rings, then refreshes the model cache in the
+/// background so newly added providers show up in /admin/models without a
+/// restart. The cache refresh does network I/O, so it is spawned — the JNI
+/// call returns as soon as the config itself is live.
 pub fn reload_config(_new_config: Config) -> Result<()> {
     if let Some(runtime) = state::get_runtime() {
         runtime.block_on(async {
             if let Some(global_state) = state::get_global_state() {
-                let guard = global_state.read().await;
-                if let Some(state) = guard.as_ref() {
+                let snapshot = {
+                    let guard = global_state.read().await;
+                    guard.as_ref().cloned()
+                };
+                if let Some(state) = snapshot.as_ref() {
                     state.reload()?;
+                }
+                if let Some(state) = snapshot {
+                    tokio::spawn(async move {
+                        state.refresh_model_cache().await;
+                    });
                 }
             }
             Ok(())
