@@ -992,9 +992,20 @@ fn short_token_hash(token: &str) -> String {
 /// under an unexpected CWD could place them somewhere world-readable or
 /// simply wrong.
 fn store_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("HOME is not set; cannot locate the device token store"))?;
-    Ok(PathBuf::from(home).join(".local/share/xrouter/device-store.json"))
+    let base_dir = if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            PathBuf::from(h)
+        } else if let Ok(cfg) = std::env::var("XROUTER_CONFIG") {
+            PathBuf::from(cfg).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+        } else {
+            return Err(anyhow::anyhow!("HOME is not set; cannot locate the device token store"));
+        }
+    } else if let Ok(cfg) = std::env::var("XROUTER_CONFIG") {
+        PathBuf::from(cfg).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        return Err(anyhow::anyhow!("HOME is not set; cannot locate the device token store"));
+    };
+    Ok(base_dir.join(".local/share/xrouter/device-store.json"))
 }
 
 fn kiro_region() -> String {

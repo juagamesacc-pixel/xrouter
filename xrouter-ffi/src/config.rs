@@ -23,9 +23,28 @@ impl Default for ServerConfig {
 
 /// Get the default config directory for the app
 pub fn default_config_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/data/local/tmp"))
-        .join("com.xrouter.app")
+    if let Ok(p) = std::env::var("XROUTER_CONFIG") {
+        let pb = PathBuf::from(p);
+        if let Some(parent) = pb.parent() {
+            if !parent.as_os_str().is_empty() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    if let Some(dir) = dirs::data_local_dir() {
+        return dir.join("com.xrouter.app");
+    }
+    let android_data = PathBuf::from("/data/user/0/com.xrouter.app/files");
+    if android_data.exists() {
+        return android_data;
+    }
+    PathBuf::from("/data/local/tmp").join("com.xrouter.app")
 }
 
 /// Get the default xrouter config file path
@@ -73,6 +92,15 @@ pub fn load_or_create_config(path: Option<&str>) -> Result<Config> {
 
     // Set the env var so xrouter_config::load() and AppState::reload() use our path
     std::env::set_var("XROUTER_CONFIG", &config_path);
+
+    // Ensure HOME is set so xrouter-auth device store can locate storage
+    if std::env::var("HOME").map(|h| h.is_empty()).unwrap_or(true) {
+        if let Some(parent) = config_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::env::set_var("HOME", parent);
+            }
+        }
+    }
 
     if config_path.exists() {
         tracing::info!("Loading config from: {:?}", config_path);
@@ -125,7 +153,11 @@ pub fn config_to_toml(config: &Config) -> Result<String> {
 
 /// Save config from JSON value (parse as Config, write as TOML)
 pub fn save_config_json(json: &serde_json::Value) -> Result<()> {
-    let config_path = default_config_path();
+    let config_path = if let Ok(p) = std::env::var("XROUTER_CONFIG") {
+        PathBuf::from(p)
+    } else {
+        default_config_path()
+    };
 
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
